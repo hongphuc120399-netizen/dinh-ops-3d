@@ -1,0 +1,10 @@
+{
+  "name": "DINH OPS 3D • Bản Đồ Chiến Thuật Núi Dinh Offline",
+  "short_name": "Dinh Ops 3D",
+  "description": "Bản đồ 3D Three.js + Google Hybrid + La bàn & GPS 100% Offline cho Núi Dinh",
+  "start_url": "./",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#070A0F",
+  "theme_color": "#070A0F"
+}

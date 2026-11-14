@@ -1,0 +1,36 @@
+{
+  "name": "dinh-ops-3d",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview --host",
+    "ota:pack": "node scripts/push-github-ota.mjs --pack-only --no-bump",
+    "push-update": "node scripts/push-github-ota.mjs",
+    "ota:lan": "node scripts/local-ota-server.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "^6.2.3",
+    "@capacitor/core": "^6.2.0",
+    "@capacitor/geolocation": "^6.1.0",
+    "@capacitor/haptics": "^6.0.2",
+    "@capgo/capacitor-updater": "^6.53.0",
+    "leaflet": "^1.9.4",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "three": "^0.170.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^6.2.0",
+    "@types/leaflet": "^1.9.14",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "~5.6.2",
+    "vite": "^6.0.3"
+  }
+}

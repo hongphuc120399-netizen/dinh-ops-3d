@@ -1,0 +1,19 @@
+# Dependencies & build outputs
+node_modules/
+dist/
+dist-ota/
+tsconfig.tsbuildinfo
+.DS_Store
+
+# Android signing secrets & local APKs (NEVER commit!)
+keystore/
+*.jks
+*.keystore
+*.apk
+
+# Android Gradle build caches
+android/.gradle/
+android/app/build/
+android/build/
+android/local.properties
+android/.idea/

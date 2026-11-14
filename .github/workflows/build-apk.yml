@@ -1,0 +1,85 @@
+name: Build Signed Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'android/**'
+      - 'capacitor.config.ts'
+      - '.github/workflows/build-apk.yml'
+    tags:
+      - 'apk-v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Setup Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Install dependencies & build web bundle
+        run: |
+          npm ci
+          npm run build
+          npx cap sync android
+
+      - name: Decode persistent Android signing keystore
+        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android/app/dinh-ops-release.jks
+
+      - name: Build Signed Release APK
+        working-directory: android
+        env:
+          KEYSTORE_FILE: dinh-ops-release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Prepare dinh-ops-3d.apk
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk dinh-ops-3d.apk
+          ls -lh dinh-ops-3d.apk
+
+      - name: Upload APK workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dinh-ops-3d-apk
+          path: dinh-ops-3d.apk
+
+      - name: Publish APK to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          APP_VER=$(node -p "require('./package.json').version")
+          TAG="apk-v${APP_VER}"
+          if [[ "${GITHUB_REF}" == refs/tags/apk-v* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          gh release create "$TAG" dinh-ops-3d.apk \
+            --title "DINH OPS 3D — Android APK (${TAG})" \
+            --notes "File cài đặt Android APK gốc (ký số cố định, hỗ trợ tự cập nhật OTA qua GitHub & Wi-Fi Laptop mà **không cần cài lại APK**)." \
+            || gh release upload "$TAG" dinh-ops-3d.apk --clobber
