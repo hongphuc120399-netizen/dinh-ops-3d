@@ -24,6 +24,7 @@ import {
 } from './utils/geoMath';
 import { countCachedTiles, loadPersistedSession, vaultSet } from './utils/offlineVault';
 import {
+  applyOtaBundle,
   checkGithubOtaUpdate,
   confirmOtaBootSuccess,
   loadOtaSettings,
@@ -116,11 +117,18 @@ export const App: React.FC = () => {
 
   // Landscape Orientation Lock & Ultra-Compact HUD States
   const [zenMode, setZenMode] = useState<boolean>(false);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
-  const [isPortraitViewport, setIsPortraitViewport] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth && window.innerWidth < 680 : false
+  const [forceLandscape, setForceLandscape] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('dinh_force_landscape_v1') !== '0' : true
   );
+  const [isOsPortrait, setIsOsPortrait] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth : false
+  );
+  const syntheticLandscape = forceLandscape && isOsPortrait;
+  const syntheticLandscapeRef = useRef<boolean>(syntheticLandscape);
+  syntheticLandscapeRef.current = syntheticLandscape;
   const [dismissedPortraitHint, setDismissedPortraitHint] = useState<boolean>(false);
+  const [dismissedQuickOta, setDismissedQuickOta] = useState<boolean>(false);
+  const [quickOtaProgress, setQuickOtaProgress] = useState<number | null>(null);
   const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
   const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
 
@@ -144,17 +152,17 @@ export const App: React.FC = () => {
     countCachedTiles().then(setCachedTileCount);
   }, []);
 
-  // Landscape Lock & Fullscreen Synchronization
+  // Landscape Lock & OS Orientation Synchronization
   useEffect(() => {
     type LockableOrientation = ScreenOrientation & { lock?: (orientation: string) => Promise<void> };
     const tryLockLandscape = () => {
+      if (!forceLandscape) return;
       const orientation = window.screen?.orientation as LockableOrientation | undefined;
       orientation?.lock?.('landscape')?.catch(() => {});
     };
 
     const syncViewportState = () => {
-      setIsPortraitViewport(window.innerHeight > window.innerWidth && window.innerWidth < 680);
-      setIsFullscreen(Boolean(document.fullscreenElement));
+      setIsOsPortrait(window.innerHeight > window.innerWidth);
     };
 
     syncViewportState();
@@ -164,32 +172,57 @@ export const App: React.FC = () => {
     window.addEventListener('pointerdown', onFirstPointerDown, { once: true });
     window.addEventListener('resize', syncViewportState);
     window.addEventListener('orientationchange', syncViewportState);
-    document.addEventListener('fullscreenchange', syncViewportState);
 
     return () => {
       window.removeEventListener('pointerdown', onFirstPointerDown);
       window.removeEventListener('resize', syncViewportState);
       window.removeEventListener('orientationchange', syncViewportState);
-      document.removeEventListener('fullscreenchange', syncViewportState);
     };
-  }, []);
+  }, [forceLandscape]);
 
-  const handleToggleLandscapeFullscreen = useCallback(async () => {
-    type LockableOrientation = ScreenOrientation & { lock?: (orientation: string) => Promise<void> };
-    const orientation = window.screen?.orientation as LockableOrientation | undefined;
+  const handleToggleForceLandscape = useCallback(() => {
+    type LockableOrientation = ScreenOrientation & {
+      lock?: (orientation: string) => Promise<void>;
+      unlock?: () => void;
+    };
+    const next = !forceLandscape;
+    setForceLandscape(next);
     try {
-      if (!document.fullscreenElement) {
-        await document.documentElement.requestFullscreen?.();
-        await orientation?.lock?.('landscape')?.catch(() => {});
-        triggerToast('↔️ Đã bật Toàn màn hình & Khóa ngang!');
-      } else {
-        await document.exitFullscreen?.();
-      }
+      localStorage.setItem('dinh_force_landscape_v1', next ? '1' : '0');
     } catch {
-      orientation?.lock?.('landscape')?.catch(() => {});
-      triggerToast('↔️ Vui lòng xoay ngang điện thoại để mở rộng bản đồ tối đa');
+      // ignore storage failures
     }
-  }, [triggerToast]);
+    const orientation = window.screen?.orientation as LockableOrientation | undefined;
+    if (next) {
+      setDismissedPortraitHint(false);
+      orientation?.lock?.('landscape')?.catch(() => {});
+      triggerToast('↔️ Đã khóa giao diện Nằm Ngang mặc định');
+    } else {
+      orientation?.unlock?.();
+      triggerToast('📱 Đã mở xoay theo chiều điện thoại');
+    }
+  }, [forceLandscape, triggerToast]);
+
+  const handleQuickOtaApply = useCallback(async () => {
+    if (!availableOta || quickOtaProgress !== null) return;
+    setQuickOtaProgress(1);
+    try {
+      const res = await applyOtaBundle({
+        bundleUrl: availableOta.bundleUrl,
+        version: availableOta.version,
+        note: availableOta.note,
+        source: 'github',
+        onProgress: (pct) => setQuickOtaProgress(pct)
+      });
+      if (!res.appliedNative) {
+        triggerToast(`✅ Đã tải v${availableOta.version}! Đang làm mới bản web...`);
+        window.setTimeout(() => window.location.reload(), 600);
+      }
+    } catch (err) {
+      setQuickOtaProgress(null);
+      triggerToast(`⚠️ Lỗi OTA: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }, [availableOta, quickOtaProgress, triggerToast]);
 
   // 1. Confirm OTA watchdog ready & load Offline Session from IndexedDB on Startup
   useEffect(() => {
@@ -350,7 +383,7 @@ export const App: React.FC = () => {
     };
 
     const handleAbsoluteOrientation = (ev: DeviceOrientationEvent) => {
-      const angle = getScreenAngle();
+      const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.alpha !== null && !Number.isNaN(ev.alpha)) {
         hasAbsolute = true;
         const raw = (360 - ev.alpha + angle) % 360;
@@ -364,7 +397,7 @@ export const App: React.FC = () => {
     };
 
     const handleRelativeOrWebkit = (ev: DeviceOrientationEvent) => {
-      const angle = getScreenAngle();
+      const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.beta !== null || ev.gamma !== null) {
         const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
         setPitchDeg(pitch);
@@ -627,7 +660,7 @@ export const App: React.FC = () => {
   }, [trackPoints, triggerFlyTo, triggerToast]);
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${syntheticLandscape ? 'synthetic-landscape' : ''}`}>
       {/* ULTRA-COMPACT LANDSCAPE TOP MICRO-HUD */}
       <header className="top-hud-bar">
         <div className="hud-top-row">
@@ -717,11 +750,15 @@ export const App: React.FC = () => {
 
             <button
               type="button"
-              className={`hud-icon-btn ${isFullscreen ? 'active' : ''}`}
-              onClick={handleToggleLandscapeFullscreen}
-              title="Toàn màn hình & Khóa nằm ngang"
+              className={`hud-icon-btn ${forceLandscape ? 'active' : ''}`}
+              onClick={handleToggleForceLandscape}
+              title={
+                forceLandscape
+                  ? 'Đang mặc định nằm ngang (Chạm để mở xoay dọc)'
+                  : 'Bấm để xoay ngang toàn màn hình'
+              }
             >
-              ⛶
+              ↔️
             </button>
 
             <button
@@ -737,10 +774,34 @@ export const App: React.FC = () => {
 
         {/* CENTERED NARROW SUB-PILLS (Only shown when active) */}
         <div className="hud-sub-pills">
-          {isPortraitViewport && !dismissedPortraitHint && (
+          {availableOta && !dismissedQuickOta && (
+            <div className="ota-quick-pill">
+              <button
+                type="button"
+                className="ota-quick-act"
+                disabled={quickOtaProgress !== null}
+                onClick={handleQuickOtaApply}
+                title={`Tải trực tiếp bản OTA v${availableOta.version} (${Math.round(availableOta.sizeBytes / 1024)} KB) — Không cần cài lại APK`}
+              >
+                {quickOtaProgress !== null
+                  ? `⏳ Đang cập nhật v${availableOta.version} (${quickOtaProgress}%)...`
+                  : `⚡ Cập nhật ngay v${availableOta.version}`}
+              </button>
+              <button
+                type="button"
+                className="pill-x"
+                onClick={() => setDismissedQuickOta(true)}
+                title="Tạm ẩn thông báo cập nhật"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {!forceLandscape && isOsPortrait && !dismissedPortraitHint && (
             <div className="portrait-nudge-pill">
-              <button type="button" className="portrait-action" onClick={handleToggleLandscapeFullscreen}>
-                ↔️ Bấm xoay ngang toàn màn hình
+              <button type="button" className="portrait-action" onClick={handleToggleForceLandscape}>
+                ↔️ Bấm khóa Nằm Ngang mặc định
               </button>
               <button
                 type="button"
@@ -967,6 +1028,7 @@ export const App: React.FC = () => {
               lockedTarget={lockedTarget}
               lockedBearing={lockedBearing}
               isSimMode={isSimMode}
+              syntheticLandscape={syntheticLandscape}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);
@@ -998,6 +1060,7 @@ export const App: React.FC = () => {
               lockedTarget={lockedTarget}
               lockedBearing={lockedBearing}
               isSimMode={isSimMode}
+              syntheticLandscape={syntheticLandscape}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);

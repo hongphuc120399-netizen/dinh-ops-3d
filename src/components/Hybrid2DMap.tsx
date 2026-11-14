@@ -30,6 +30,7 @@ interface Hybrid2DMapProps {
   lockedTarget: TacticalTarget | null;
   lockedBearing: number | null;
   isSimMode: boolean;
+  syntheticLandscape?: boolean;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -160,6 +161,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   lockedTarget,
   lockedBearing,
   isSimMode,
+  syntheticLandscape = false,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
@@ -168,6 +170,8 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
 }) => {
   const divRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const syntheticLandscapeRef = useRef<boolean>(syntheticLandscape);
+  syntheticLandscapeRef.current = syntheticLandscape;
   const baseLayerRef = useRef<L.GridLayer | null>(null);
   const vectorsGroupRef = useRef<L.LayerGroup | null>(null);
   const pinsGroupRef = useRef<L.LayerGroup | null>(null);
@@ -191,6 +195,49 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       zoomControl: false,
       attributionControl: false
     });
+
+    // Remap Leaflet touch, drag, pinch-zoom & tap coords when Pure-OTA Synthetic Landscape (+90deg) is active
+    const origMouseEventToContainerPoint = map.mouseEventToContainerPoint.bind(map);
+    map.mouseEventToContainerPoint = (ev: MouseEvent) => {
+      if (syntheticLandscapeRef.current && divRef.current) {
+        const rect = divRef.current.getBoundingClientRect();
+        return L.point(ev.clientY - rect.top, rect.right - ev.clientX);
+      }
+      return origMouseEventToContainerPoint(ev);
+    };
+
+    type LeafletDraggablePatch = {
+      _onDown?: (e: MouseEvent & { touches?: TouchList }) => void;
+      _onMove?: (e: MouseEvent & { touches?: TouchList }) => void;
+      _startPoint?: L.Point;
+      _parentScale?: { x: number; y: number };
+    };
+    const drag = (map.dragging as unknown as { _draggable?: LeafletDraggablePatch })._draggable;
+    if (drag && drag._onDown && drag._onMove) {
+      map.dragging.disable();
+      const origOnDown = drag._onDown;
+      const origOnMove = drag._onMove;
+      let rawStart: { x: number; y: number } | null = null;
+      drag._onDown = function (e) {
+        const first = e.touches ? e.touches[0] : e;
+        if (first) rawStart = { x: first.clientX, y: first.clientY };
+        origOnDown.call(this, e);
+        if (syntheticLandscapeRef.current) {
+          this._parentScale = { x: 1, y: 1 };
+        }
+      };
+      drag._onMove = function (e) {
+        const first = e.touches && e.touches.length === 1 ? e.touches[0] : e;
+        if (syntheticLandscapeRef.current && rawStart && first && (!e.touches || e.touches.length === 1)) {
+          const dxRaw = first.clientX - rawStart.x;
+          const dyRaw = first.clientY - rawStart.y;
+          this._startPoint = L.point(first.clientX - dyRaw, first.clientY + dxRaw);
+          this._parentScale = { x: 1, y: 1 };
+        }
+        origOnMove.call(this, e);
+      };
+      map.dragging.enable();
+    }
 
     const vectors = L.layerGroup().addTo(map);
     const pinsLayer = L.layerGroup().addTo(map);
@@ -496,6 +543,12 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     if (!flyToTrigger || !mapRef.current) return;
     mapRef.current.flyTo([flyToTrigger.lat, flyToTrigger.lon], flyToTrigger.zoom ?? 16, { duration: 0.7 });
   }, [flyToTrigger]);
+
+  // 7. Re-measure Leaflet viewport immediately when Pure-OTA Synthetic Landscape toggles
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => mapRef.current?.invalidateSize());
+    return () => cancelAnimationFrame(raf);
+  }, [syntheticLandscape]);
 
   return (
     <div className="map-2d-wrapper">

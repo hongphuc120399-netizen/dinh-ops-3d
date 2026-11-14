@@ -49,6 +49,7 @@ interface Terrain3DViewProps {
   lockedTarget: TacticalTarget | null;
   lockedBearing: number | null;
   isSimMode: boolean;
+  syntheticLandscape?: boolean;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -334,6 +335,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   lockedTarget,
   lockedBearing,
   isSimMode,
+  syntheticLandscape = false,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
@@ -341,6 +343,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   onSimMoveTo
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const sceneResizeRef = useRef<(() => void) | null>(null);
   const [badges, setBadges] = useState<ProjectedBadge[]>([]);
   const [camAzimuthDeg, setCamAzimuthDeg] = useState<number>(0);
   const [inspectedSpot, setInspectedSpot] = useState<{
@@ -373,7 +376,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     hidePoiBadges,
     userPins,
     lockedTarget,
-    isSimMode
+    isSimMode,
+    syntheticLandscape
   });
   liveStateRef.current = {
     playerLat,
@@ -388,8 +392,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     hidePoiBadges,
     userPins,
     lockedTarget,
-    isSimMode
+    isSimMode,
+    syntheticLandscape
   };
+
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => sceneResizeRef.current?.());
+    return () => cancelAnimationFrame(raf);
+  }, [syntheticLandscape]);
 
   const sceneRef = useRef<{
     scene: THREE.Scene;
@@ -439,7 +449,40 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     renderer.outputColorSpace = THREE.SRGBColorSpace;
     container.appendChild(renderer.domElement);
 
-    const controls = new OrbitControls(camera, renderer.domElement);
+    const controls = new OrbitControls(camera);
+    controls.domElement = renderer.domElement;
+    // Remap pointer & wheel coordinates cleanly when running in Pure-OTA Synthetic Landscape (+90deg)
+    const rawCtrl = controls as unknown as {
+      _onPointerDown: (ev: PointerEvent) => void;
+      _onPointerMove: (ev: PointerEvent) => void;
+      _onPointerUp: (ev: PointerEvent) => void;
+      _onMouseWheel: (ev: WheelEvent) => void;
+      connect: () => void;
+    };
+    const wrapEv = <E extends Event>(ev: E): E => {
+      if (!liveStateRef.current.syntheticLandscape) return ev;
+      const me = ev as unknown as { clientX?: number; clientY?: number };
+      const rx = typeof me.clientY === 'number' ? me.clientY : 0;
+      const ry = typeof me.clientX === 'number' ? window.innerWidth - me.clientX : 0;
+      return new Proxy(ev, {
+        get(target, prop) {
+          if (prop === 'clientX' || prop === 'pageX') return rx;
+          if (prop === 'clientY' || prop === 'pageY') return ry;
+          const val = Reflect.get(target, prop, target);
+          return typeof val === 'function' ? val.bind(target) : val;
+        }
+      });
+    };
+    const origPtrDown = rawCtrl._onPointerDown;
+    const origPtrMove = rawCtrl._onPointerMove;
+    const origPtrUp = rawCtrl._onPointerUp;
+    const origWheel = rawCtrl._onMouseWheel;
+    rawCtrl._onPointerDown = (ev: PointerEvent) => origPtrDown(wrapEv(ev));
+    rawCtrl._onPointerMove = (ev: PointerEvent) => origPtrMove(wrapEv(ev));
+    rawCtrl._onPointerUp = (ev: PointerEvent) => origPtrUp(wrapEv(ev));
+    rawCtrl._onMouseWheel = (ev: WheelEvent) => origWheel(wrapEv(ev));
+    rawCtrl.connect();
+
     controls.enableDamping = true;
     controls.dampingFactor = 0.075;
     controls.maxPolarAngle = Math.PI * 0.482; // never clip underground
@@ -618,9 +661,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     const triggerInspectAtClientXY = (clientX: number, clientY: number) => {
       const rect = renderer.domElement.getBoundingClientRect();
+      const viewW = renderer.domElement.clientWidth || rect.width;
+      const viewH = renderer.domElement.clientHeight || rect.height;
+      const localX = liveStateRef.current.syntheticLandscape
+        ? clientY - rect.top
+        : clientX - rect.left;
+      const localY = liveStateRef.current.syntheticLandscape
+        ? rect.right - clientX
+        : clientY - rect.top;
       const ndc = new THREE.Vector2(
-        ((clientX - rect.left) / rect.width) * 2 - 1,
-        -((clientY - rect.top) / rect.height) * 2 + 1
+        (localX / Math.max(1, viewW)) * 2 - 1,
+        -(localY / Math.max(1, viewH)) * 2 + 1
       );
       raycaster.setFromCamera(ndc, camera);
       const hits = raycaster.intersectObject(terrainMesh, false);
@@ -632,13 +683,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         inspectMarker.position.set(pt.x, pt.y + 4, pt.z);
         inspectMarker.visible = true;
         if (navigator.vibrate) navigator.vibrate(18);
+        const padX = Math.min(150, viewW * 0.45);
         setInspectedSpot({
           lat: Number(lat.toFixed(6)),
           lon: Number(lon.toFixed(6)),
           ele,
           slope,
-          screenX: Math.min(rect.width - 150, Math.max(150, clientX - rect.left)),
-          screenY: Math.max(90, clientY - rect.top - 16)
+          screenX: Math.min(viewW - padX, Math.max(padX, localX)),
+          screenY: Math.max(Math.min(90, viewH * 0.45), localY - 16)
         });
       }
     };
@@ -682,11 +734,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     renderer.domElement.addEventListener('dblclick', onDblClick);
 
     const onResize = () => {
-      if (!container) return;
+      if (!container || !container.clientWidth || !container.clientHeight) return;
       camera.aspect = container.clientWidth / Math.max(1, container.clientHeight);
       camera.updateProjectionMatrix();
       renderer.setSize(container.clientWidth, container.clientHeight);
     };
+    sceneResizeRef.current = onResize;
     const ro = new ResizeObserver(onResize);
     ro.observe(container);
 
@@ -869,6 +922,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     return () => {
       cancelAnimationFrame(rafId);
+      sceneResizeRef.current = null;
       ro.disconnect();
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);

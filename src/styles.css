@@ -258,6 +258,32 @@ button:active {
   flex-shrink: 0;
 }
 
+.ota-quick-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 6px 0 9px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(0, 245, 212, 0.24), rgba(14, 165, 233, 0.26));
+  backdrop-filter: blur(18px);
+  border: 1px solid rgba(0, 245, 212, 0.65);
+  box-shadow: 0 4px 16px rgba(0, 245, 212, 0.25);
+}
+.ota-quick-act {
+  border: none;
+  background: transparent;
+  padding: 2px 3px;
+  font-size: 0.67rem;
+  font-weight: 800;
+  color: #ecfeff;
+  white-space: nowrap;
+}
+.ota-quick-act:disabled {
+  opacity: 0.78;
+}
+
 /* COMPACT SINGLE-LINE HOMING RADAR PILL */
 .homing-hud-banner {
   pointer-events: auto;
@@ -1973,6 +1999,121 @@ select {
   .compass-big-deg span {
     font-size: 1.75rem;
   }
+}
+
+/* PURE-OTA SYNTHETIC LANDSCAPE ENGINE (Works inside Portrait-Locked Android APK without reinstall) */
+.app-shell.synthetic-landscape {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vh;
+  height: 100vw;
+  width: 100dvh;
+  height: 100dvw;
+  transform-origin: 0 0;
+  transform: translateX(100vw) rotate(90deg);
+  transform: translateX(100dvw) rotate(90deg);
+  overflow: hidden;
+}
+.app-shell.synthetic-landscape .top-hud-bar {
+  top: 5px;
+  left: max(8px, env(safe-area-inset-top));
+  right: max(8px, env(safe-area-inset-bottom));
+}
+.app-shell.synthetic-landscape .floating-compass-widget {
+  left: max(8px, env(safe-area-inset-top));
+  bottom: 6px;
+}
+.app-shell.synthetic-landscape .floating-3d-right-stack,
+.app-shell.synthetic-landscape .map-2d-floating-controls {
+  right: max(8px, env(safe-area-inset-bottom));
+  bottom: 6px;
+}
+.app-shell.synthetic-landscape .layer-popover-panel {
+  right: max(8px, env(safe-area-inset-bottom));
+  width: min(350px, calc(100% - 16px));
+  max-height: calc(100% - 48px);
+}
+.app-shell.synthetic-landscape .viewport-stage.mode-split {
+  flex-direction: row;
+}
+.app-shell.synthetic-landscape .viewport-stage.mode-split .pane-3d {
+  width: 56%;
+  height: 100%;
+  border-right: 1px solid rgba(255, 255, 255, 0.15);
+  border-bottom: none;
+}
+.app-shell.synthetic-landscape .viewport-stage.mode-split .pane-2d {
+  width: 44%;
+  height: 100%;
+}
+.app-shell.synthetic-landscape .hide-narrow {
+  display: inline-flex;
+}
+.app-shell.synthetic-landscape .hide-narrow-txt {
+  display: inline;
+}
+.app-shell.synthetic-landscape .sheet-backdrop,
+.app-shell.synthetic-landscape .popover-click-catcher,
+.app-shell.synthetic-landscape .photo-lightbox {
+  position: absolute;
+  inset: 0;
+}
+.app-shell.synthetic-landscape .sheet-backdrop {
+  align-items: center;
+  padding: 8px;
+}
+.app-shell.synthetic-landscape .tactical-sheet {
+  width: min(640px, 95%);
+  max-height: 92%;
+  height: auto;
+  border-radius: 18px;
+  padding: 10px 14px;
+  gap: 8px;
+}
+.app-shell.synthetic-landscape .tactical-sheet.tall-sheet {
+  height: 88%;
+}
+.app-shell.synthetic-landscape .compass-modal-sheet {
+  max-height: 92%;
+}
+.app-shell.synthetic-landscape .photo-lightbox img {
+  max-height: 82%;
+  max-width: 94%;
+}
+.app-shell.synthetic-landscape .sim-floating-drawer {
+  max-width: min(500px, calc(100% - 16px));
+  max-height: calc(100% - 54px);
+}
+.app-shell.synthetic-landscape .bottom-thumb-dock {
+  max-width: calc(100% - 16px);
+}
+.app-shell.synthetic-landscape .homing-hud-banner,
+.app-shell.synthetic-landscape .safety-banner,
+.app-shell.synthetic-landscape .ota-quick-pill {
+  max-width: min(480px, 92%);
+}
+.app-shell.synthetic-landscape .precision-homing-card {
+  max-height: 92%;
+}
+.app-shell.synthetic-landscape .compass-master-dial {
+  width: min(168px, 44dvw);
+  height: min(168px, 44dvw);
+}
+.app-shell.synthetic-landscape .compass-dial-ring {
+  width: 140px;
+  height: 140px;
+  margin: 2px 0;
+}
+.app-shell.synthetic-landscape .big-dist {
+  font-size: 1.45rem;
+}
+.app-shell.synthetic-landscape .compass-big-deg span {
+  font-size: 1.75rem;
+}
+.app-shell.synthetic-landscape .tactical-toast {
+  position: absolute;
+  bottom: 48px;
 }
 
 @media (prefers-reduced-motion: reduce) {

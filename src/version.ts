@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.0.1',
-  buildNumber: 202611141114,
-  builtAt: '2026-11-14T11:14:52+07:00',
-  note: "Mặc định nằm ngang & thu gọn tối đa HUD mở rộng bản đồ"
+  version: '1.0.2',
+  buildNumber: 202611142103,
+  builtAt: '2026-11-14T21:03:50+07:00',
+  note: "Mặc định xoay ngang trực tiếp qua OTA (không cần cài lại APK) + Thu gọn HUD & Cập nhật 1 chạm"
 };
