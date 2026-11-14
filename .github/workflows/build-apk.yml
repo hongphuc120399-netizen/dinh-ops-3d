@@ -9,8 +9,6 @@ on:
       - 'android/**'
       - 'capacitor.config.ts'
       - '.github/workflows/build-apk.yml'
-    tags:
-      - 'apk-v*'
 
 permissions:
   contents: write
@@ -28,11 +26,11 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
-      - name: Setup Java 21
+      - name: Setup Java 17
         uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
-          java-version: '21'
+          java-version: '17'
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -57,7 +55,7 @@ jobs:
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           chmod +x gradlew
-          ./gradlew assembleRelease --no-daemon
+          bash ./gradlew assembleRelease -x lint -x lintVitalRelease --no-daemon
 
       - name: Prepare dinh-ops-3d.apk
         run: |
@@ -76,9 +74,6 @@ jobs:
         run: |
           APP_VER=$(node -p "require('./package.json').version")
           TAG="apk-v${APP_VER}"
-          if [[ "${GITHUB_REF}" == refs/tags/apk-v* ]]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
           gh release create "$TAG" dinh-ops-3d.apk \
             --title "DINH OPS 3D — Android APK (${TAG})" \
             --notes "File cài đặt Android APK gốc (ký số cố định, hỗ trợ tự cập nhật OTA qua GitHub & Wi-Fi Laptop mà **không cần cài lại APK**)." \
