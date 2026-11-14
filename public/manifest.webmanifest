@@ -4,7 +4,7 @@
   "description": "Bản đồ 3D Three.js + Google Hybrid + La bàn & GPS 100% Offline cho Núi Dinh",
   "start_url": "./",
   "display": "standalone",
-  "orientation": "portrait-primary",
+  "orientation": "landscape",
   "background_color": "#070A0F",
   "theme_color": "#070A0F"
 }

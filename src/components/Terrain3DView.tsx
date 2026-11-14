@@ -35,6 +35,7 @@ interface Terrain3DViewProps {
   visibleRoutes: Record<string, boolean>;
   showAllTrails: boolean;
   showPois: boolean;
+  hidePoiBadges?: boolean;
   playerLat: number;
   playerLon: number;
   playerEle: number;
@@ -320,6 +321,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   visibleRoutes,
   showAllTrails,
   showPois,
+  hidePoiBadges = false,
   playerLat,
   playerLon,
   playerEle,
@@ -350,6 +352,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     screenY: number;
   } | null>(null);
   const [satLoading, setSatLoading] = useState(false);
+  const [showGestureHint, setShowGestureHint] = useState(true);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setShowGestureHint(false), 3500);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   // Refs for mutable live values inside requestAnimationFrame
   const liveStateRef = useRef({
@@ -362,6 +370,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     cameraMode,
     verticalScale,
     showPois,
+    hidePoiBadges,
     userPins,
     lockedTarget,
     isSimMode
@@ -376,6 +385,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     cameraMode,
     verticalScale,
     showPois,
+    hidePoiBadges,
     userPins,
     lockedTarget,
     isSimMode
@@ -634,6 +644,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      setShowGestureHint(false);
       pointerDownPos.x = e.clientX;
       pointerDownPos.y = e.clientY;
       pointerDownPos.time = performance.now();
@@ -783,6 +794,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           for (const poi of dataset.pois) {
             if (poi.name.startsWith('Đỉnh phụ') && poi.ele < 350) continue;
             const isLocked = st.lockedTarget?.id === poi.id;
+            if (st.hidePoiBadges && !isLocked) continue;
             const priority = isLocked
               ? 100
               : poi.id === 'verified-la-ban-helipad' ||
@@ -813,7 +825,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             if (tempV.z >= -1 && tempV.z <= 1) {
               const sx = (tempV.x * 0.5 + 0.5) * w;
               const sy = (-tempV.y * 0.5 + 0.5) * h;
-              if (sx > 20 && sx < w - 20 && sy > 75 && sy < h - 85) {
+              if (sx > 20 && sx < w - 20 && sy > 40 && sy < h - 44) {
                 const stStyle = POI_STYLE[poi.category] || { emoji: '📍', color: '#94A3B8' };
                 const cleanSub = poi.name.includes(`${poi.ele}m`) ? undefined : `${poi.ele}m`;
                 candidates.push({
@@ -833,13 +845,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           }
 
           candidates.sort((a, b) => b.priority - a.priority);
+          const maxPois = h < 500 ? 5 : 8;
+          let placedPoiCount = 0;
           for (const cand of candidates) {
             if (!cand.isLocked) {
+              if (placedPoiCount >= maxPois) continue;
               const collides = nextBadges.some((placed) => {
                 const reqX = (placed.label.length + cand.label.length) * 3.4 + 48;
-                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 28;
+                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 32;
               });
               if (collides) continue;
+              placedPoiCount++;
             }
             nextBadges.push(cand);
           }
@@ -1298,15 +1314,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           title="Kim chỉ hướng Bắc của góc nhìn 3D (Bấm để xoay núi 3D về chuẩn hướng Bắc)"
         >
           <svg
-            width="24"
-            height="24"
+            width="16"
+            height="16"
             viewBox="0 0 24 24"
             style={{ transform: `rotate(${-camAzimuthDeg}deg)` }}
           >
             <polygon points="12,2 8.5,12 15.5,12" fill="#FF3B30" />
             <polygon points="12,22 8.5,12 15.5,12" fill="#CBD5E1" />
           </svg>
-          <span>Bắc 3D</span>
+          <span>Bắc</span>
         </button>
 
         <button
@@ -1315,7 +1331,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           onClick={focusPlayer3D}
           title="Đưa camera 3D về vị trí của tôi"
         >
-          🎯 Về vị trí tôi
+          🎯 Tôi
         </button>
       </div>
 
@@ -1392,9 +1408,11 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         </div>
       )}
 
-      <div className="hint-3d-gesture">
-        Xoay 1 ngón • Phóng/Nghiêng 2 ngón • Nhấn giữ (hoặc nhấp đúp) vào sườn núi để đo độ cao & ghim điểm
-      </div>
+      {showGestureHint && (
+        <div className="hint-3d-gesture">
+          1 ngón xoay • 2 ngón phóng/nghiêng • Nhấn giữ sườn núi để ghim
+        </div>
+      )}
     </div>
   );
 };

@@ -114,6 +114,16 @@ export const App: React.FC = () => {
   } | null>(null);
   const [toastMsg, setToastMsg] = useState<string | null>(null);
 
+  // Landscape Orientation Lock & Ultra-Compact HUD States
+  const [zenMode, setZenMode] = useState<boolean>(false);
+  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
+  const [isPortraitViewport, setIsPortraitViewport] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? window.innerHeight > window.innerWidth && window.innerWidth < 680 : false
+  );
+  const [dismissedPortraitHint, setDismissedPortraitHint] = useState<boolean>(false);
+  const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
+  const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
+
   const playerEle = useMemo(
     () => Math.round(sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon)),
     [playerLat, playerLon]
@@ -133,6 +143,53 @@ export const App: React.FC = () => {
   const refreshTileCount = useCallback(() => {
     countCachedTiles().then(setCachedTileCount);
   }, []);
+
+  // Landscape Lock & Fullscreen Synchronization
+  useEffect(() => {
+    type LockableOrientation = ScreenOrientation & { lock?: (orientation: string) => Promise<void> };
+    const tryLockLandscape = () => {
+      const orientation = window.screen?.orientation as LockableOrientation | undefined;
+      orientation?.lock?.('landscape')?.catch(() => {});
+    };
+
+    const syncViewportState = () => {
+      setIsPortraitViewport(window.innerHeight > window.innerWidth && window.innerWidth < 680);
+      setIsFullscreen(Boolean(document.fullscreenElement));
+    };
+
+    syncViewportState();
+    tryLockLandscape();
+
+    const onFirstPointerDown = () => tryLockLandscape();
+    window.addEventListener('pointerdown', onFirstPointerDown, { once: true });
+    window.addEventListener('resize', syncViewportState);
+    window.addEventListener('orientationchange', syncViewportState);
+    document.addEventListener('fullscreenchange', syncViewportState);
+
+    return () => {
+      window.removeEventListener('pointerdown', onFirstPointerDown);
+      window.removeEventListener('resize', syncViewportState);
+      window.removeEventListener('orientationchange', syncViewportState);
+      document.removeEventListener('fullscreenchange', syncViewportState);
+    };
+  }, []);
+
+  const handleToggleLandscapeFullscreen = useCallback(async () => {
+    type LockableOrientation = ScreenOrientation & { lock?: (orientation: string) => Promise<void> };
+    const orientation = window.screen?.orientation as LockableOrientation | undefined;
+    try {
+      if (!document.fullscreenElement) {
+        await document.documentElement.requestFullscreen?.();
+        await orientation?.lock?.('landscape')?.catch(() => {});
+        triggerToast('↔️ Đã bật Toàn màn hình & Khóa ngang!');
+      } else {
+        await document.exitFullscreen?.();
+      }
+    } catch {
+      orientation?.lock?.('landscape')?.catch(() => {});
+      triggerToast('↔️ Vui lòng xoay ngang điện thoại để mở rộng bản đồ tối đa');
+    }
+  }, [triggerToast]);
 
   // 1. Confirm OTA watchdog ready & load Offline Session from IndexedDB on Startup
   useEffect(() => {
@@ -284,25 +341,41 @@ export const App: React.FC = () => {
     const getScreenAngle = () =>
       typeof window.screen?.orientation?.angle === 'number' ? window.screen.orientation.angle : 0;
 
+    const remapTiltForOrientation = (beta: number, gamma: number, screenAngle: number) => {
+      const normalized = ((Math.round(screenAngle / 90) * 90) % 360 + 360) % 360;
+      if (normalized === 90) return { pitch: gamma, roll: -beta };
+      if (normalized === 270) return { pitch: -gamma, roll: beta };
+      if (normalized === 180) return { pitch: -beta, roll: -gamma };
+      return { pitch: beta, roll: gamma };
+    };
+
     const handleAbsoluteOrientation = (ev: DeviceOrientationEvent) => {
+      const angle = getScreenAngle();
       if (ev.alpha !== null && !Number.isNaN(ev.alpha)) {
         hasAbsolute = true;
-        const raw = (360 - ev.alpha + getScreenAngle()) % 360;
+        const raw = (360 - ev.alpha + angle) % 360;
         setCompassHeading(Math.round((raw + 360) % 360));
       }
-      if (ev.beta !== null) setPitchDeg(ev.beta);
-      if (ev.gamma !== null) setRollDeg(ev.gamma);
+      if (ev.beta !== null || ev.gamma !== null) {
+        const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
+        setPitchDeg(pitch);
+        setRollDeg(roll);
+      }
     };
 
     const handleRelativeOrWebkit = (ev: DeviceOrientationEvent) => {
-      if (ev.beta !== null) setPitchDeg(ev.beta);
-      if (ev.gamma !== null) setRollDeg(ev.gamma);
+      const angle = getScreenAngle();
+      if (ev.beta !== null || ev.gamma !== null) {
+        const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
+        setPitchDeg(pitch);
+        setRollDeg(roll);
+      }
 
       const webkitH = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
       if (typeof webkitH === 'number' && !Number.isNaN(webkitH)) {
-        setCompassHeading(Math.round((webkitH + 360) % 360));
+        setCompassHeading(Math.round((((webkitH + angle) % 360) + 360) % 360));
       } else if (!hasAbsolute && ev.alpha !== null) {
-        const raw = (360 - ev.alpha + getScreenAngle()) % 360;
+        const raw = (360 - ev.alpha + angle) % 360;
         setCompassHeading(Math.round((raw + 360) % 360));
       }
     };
@@ -555,15 +628,15 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-shell">
-      {/* TOP FROSTED TACTICAL HUD */}
+      {/* ULTRA-COMPACT LANDSCAPE TOP MICRO-HUD */}
       <header className="top-hud-bar">
-        <div className="hud-brand-row">
-          <div className="brand-badge">
-            <span className="pulse-dot" />
-            <strong>DINH OPS 3D</strong>
-            <span className={`net-pill ${isOnline ? 'online' : 'offline'}`}>
-              {isOnline ? 'ONLINE + VAULT' : '100% OFFLINE'}
-            </span>
+        <div className="hud-top-row">
+          {/* Left Floating Telemetry Micro-Pill */}
+          <div className="hud-tele-pill">
+            <span
+              className={`pulse-dot ${isOnline ? 'online' : 'offline'}`}
+              title={isOnline ? 'Online + Offline Vault' : '100% Offline'}
+            />
             <button
               type="button"
               className={`hud-version-pill ${availableOta ? 'has-update' : ''}`}
@@ -573,128 +646,176 @@ export const App: React.FC = () => {
               }}
               title={
                 availableOta
-                  ? `Có bản cập nhật mới v${availableOta.version} từ GitHub — Chạm để cập nhật không cần cài lại APK!`
-                  : 'Quản lý phiên bản & Cập nhật OTA không cần cài lại APK'
+                  ? `Có bản mới v${availableOta.version} từ GitHub — Chạm cập nhật OTA`
+                  : 'Phiên bản & Cập nhật OTA'
               }
             >
               {availableOta ? `🔄 v${availableOta.version}!` : `v${APP_BUILD_INFO.version}`}
             </button>
+
+            {!zenMode && (
+              <>
+                <span className="tele-mini-sep" />
+                <span className="tele-inline" title="Độ cao hiện tại">
+                  ⛰️ <strong>{playerEle}m</strong>
+                </span>
+                <button
+                  type="button"
+                  className="tele-compass-chip"
+                  onClick={() => setShowCompassModal(true)}
+                  title="Bấm mở La Bàn Chiến Thuật 360°"
+                >
+                  🧭 <strong>{formatBearingCardinal(compassHeading)}</strong>
+                </button>
+                <span className="tele-inline hide-narrow" title="Hướng di chuyển GPS">
+                  🛰️{' '}
+                  <strong className="text-emerald">
+                    {gpsCourse !== null ? `${Math.round(gpsCourse)}°` : '--'}
+                  </strong>
+                </span>
+                <span className="tele-inline hide-narrow" title="Quãng đường vết chân đã đi">
+                  👣 <strong>{formatDistance(totalTrackDistanceM)}</strong>
+                </span>
+              </>
+            )}
           </div>
 
-          <div className="view-mode-segmented">
+          {/* Right Floating View & Mode Micro-Pill */}
+          <div className="hud-controls-pill">
+            <div className="view-mode-segmented">
+              <button
+                type="button"
+                className={viewMode === '3d' ? 'active' : ''}
+                onClick={() => setViewMode('3d')}
+              >
+                3D
+              </button>
+              <button
+                type="button"
+                className={viewMode === 'split' ? 'active' : ''}
+                onClick={() => setViewMode('split')}
+              >
+                Đôi
+              </button>
+              <button
+                type="button"
+                className={viewMode === '2d' ? 'active' : ''}
+                onClick={() => setViewMode('2d')}
+              >
+                2D
+              </button>
+            </div>
+
             <button
               type="button"
-              className={viewMode === '3d' ? 'active' : ''}
-              onClick={() => setViewMode('3d')}
+              className={`hud-icon-btn ${showLayerPopover ? 'active' : ''}`}
+              onClick={() => setShowLayerPopover((v) => !v)}
+              title="Bật/tắt lớp địa hình, vệ tinh & 4 tuyến trail"
             >
-              🏔️ 3D
+              🎛️<span className="hide-narrow-txt"> Lớp</span>
             </button>
+
             <button
               type="button"
-              className={viewMode === 'split' ? 'active' : ''}
-              onClick={() => setViewMode('split')}
+              className={`hud-icon-btn ${isFullscreen ? 'active' : ''}`}
+              onClick={handleToggleLandscapeFullscreen}
+              title="Toàn màn hình & Khóa nằm ngang"
             >
-              ⚡ Đôi
+              ⛶
             </button>
+
             <button
               type="button"
-              className={viewMode === '2d' ? 'active' : ''}
-              onClick={() => setViewMode('2d')}
+              className={`hud-icon-btn ${zenMode ? 'active' : ''}`}
+              onClick={() => setZenMode((v) => !v)}
+              title={zenMode ? 'Hiện lại thanh chỉ số HUD' : 'Thu gọn tối đa HUD (Sạch bản đồ)'}
             >
-              🗺️ 2D
+              {zenMode ? '👁️‍🗨️' : '👁️'}
             </button>
           </div>
-
-          <button
-            type="button"
-            className={`layer-gear-btn ${showLayerPopover ? 'active' : ''}`}
-            onClick={() => setShowLayerPopover((v) => !v)}
-          >
-            🎛️ Lớp
-          </button>
         </div>
 
-        {/* LIVE TELEMETRY STRIP (Optical Tabular Numbers) */}
-        <div className="telemetry-strip">
-          <div className="tele-cell">
-            <small>ĐỘ CAO</small>
-            <strong>{playerEle} m</strong>
-          </div>
-          <div
-            className="tele-cell tele-clickable"
-            onClick={() => setShowCompassModal(true)}
-            title="Bấm để mở La Bàn Chiến Thuật 360°"
-          >
-            <small>🧭 LA BÀN MŨI</small>
-            <strong>{formatBearingCardinal(compassHeading)}</strong>
-          </div>
-          <div className="tele-cell">
-            <small>HƯỚNG ĐI GPS</small>
-            <strong className="text-emerald">
-              {gpsCourse !== null ? `${Math.round(gpsCourse)}°` : '--'}
-            </strong>
-          </div>
-          <div className="tele-cell">
-            <small>VẾT CHÂN</small>
-            <strong>{formatDistance(totalTrackDistanceM)}</strong>
-          </div>
-          <div className="tele-cell hide-xs">
-            <small>TỌA ĐỘ HIỆN TẠI</small>
-            <strong>
-              {playerLat.toFixed(5)}, {playerLon.toFixed(5)}
-            </strong>
-          </div>
+        {/* CENTERED NARROW SUB-PILLS (Only shown when active) */}
+        <div className="hud-sub-pills">
+          {isPortraitViewport && !dismissedPortraitHint && (
+            <div className="portrait-nudge-pill">
+              <button type="button" className="portrait-action" onClick={handleToggleLandscapeFullscreen}>
+                ↔️ Bấm xoay ngang toàn màn hình
+              </button>
+              <button
+                type="button"
+                className="pill-x"
+                onClick={() => setDismissedPortraitHint(true)}
+                title="Ẩn nhắc nhở"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {lockedTarget && homingMetrics && (
+            <div className="homing-hud-banner" onClick={() => setShowPrecisionRadar(true)}>
+              <div
+                className="mini-radar-arrow"
+                style={{ transform: `rotate(${homingMetrics.clock.deltaDeg}deg)` }}
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2L4.5 20.5L12 16.5L19.5 20.5L12 2Z" />
+                </svg>
+              </div>
+              <span className="homing-compact-txt">
+                🎯 <strong>{lockedTarget.name}</strong> • {formatDistance(homingMetrics.dist)} (
+                {homingMetrics.clock.clock}h,{' '}
+                {homingMetrics.eleDiff >= 0 ? `+${homingMetrics.eleDiff}m` : `${homingMetrics.eleDiff}m`})
+              </span>
+              <button
+                type="button"
+                className="homing-clear-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setLockedTarget(null);
+                }}
+                title="Bỏ khóa mục tiêu"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {safetyAlerts.length > 0 &&
+            (safetyAlerts[0].level === 'critical' || safetyAlerts[0].title !== dismissedWarnTitle) && (
+              <div
+                className={`safety-banner ${safetyAlerts[0].level}`}
+                onClick={() => setExpandedSafety((v) => !v)}
+                title="Chạm để xem/thu gọn chi tiết cảnh báo"
+              >
+                <div className="safety-txt-wrap">
+                  <strong>{safetyAlerts[0].title}</strong>
+                  {expandedSafety && <p>{safetyAlerts[0].detail}</p>}
+                </div>
+                {safetyAlerts[0].level !== 'critical' && (
+                  <button
+                    type="button"
+                    className="pill-x"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDismissedWarnTitle(safetyAlerts[0].title);
+                    }}
+                    title="Tạm ẩn cảnh báo này"
+                  >
+                    ✕
+                  </button>
+                )}
+              </div>
+            )}
         </div>
-
-        {/* ACTIVE HOMING RADAR BAR (Tap for Full-Screen Precision Compass!) */}
-        {lockedTarget && homingMetrics && (
-          <div className="homing-hud-banner" onClick={() => setShowPrecisionRadar(true)}>
-            <div
-              className="mini-radar-arrow"
-              style={{ transform: `rotate(${homingMetrics.clock.deltaDeg}deg)` }}
-            >
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor">
-                <path d="M12 2L4.5 20.5L12 16.5L19.5 20.5L12 2Z" />
-              </svg>
-            </div>
-            <div className="homing-hud-info">
-              <div className="homing-target-title">
-                🎯 <strong>{lockedTarget.name}</strong>
-                {lockedTarget.photoDataUrl && <span className="has-photo-tag">📷 Có ảnh</span>}
-              </div>
-              <div className="homing-target-sub">
-                Còn <strong>{formatDistance(homingMetrics.dist)}</strong> • {homingMetrics.clock.label} •{' '}
-                {homingMetrics.eleDiff >= 0 ? `+${homingMetrics.eleDiff}m` : `${homingMetrics.eleDiff}m`}
-              </div>
-            </div>
-            <button
-              type="button"
-              className="homing-clear-btn"
-              onClick={(e) => {
-                e.stopPropagation();
-                setLockedTarget(null);
-              }}
-              title="Bỏ khóa mục tiêu"
-            >
-              ✕
-            </button>
-          </div>
-        )}
-
-        {/* SAFETY / GEOFENCE ALERTS */}
-        {safetyAlerts.length > 0 && (
-          <div className={`safety-banner ${safetyAlerts[0].level}`}>
-            <div>
-              <strong>{safetyAlerts[0].title}</strong>
-              <p>{safetyAlerts[0].detail}</p>
-            </div>
-          </div>
-        )}
       </header>
 
       {/* FLOATING LAYER & 3D SETTINGS POPOVER */}
       {showLayerPopover && (
-        <div className="layer-popover-panel">
+        <>
+          <div className="popover-click-catcher" onClick={() => setShowLayerPopover(false)} />
+          <div className="layer-popover-panel">
           <div className="pop-section">
             <span className="pop-label">Bề mặt Địa hình 3D (Three.js)</span>
             <div className="chip-row">
@@ -817,6 +938,7 @@ export const App: React.FC = () => {
             </div>
           </div>
         </div>
+        </>
       )}
 
       {/* MAIN VIEWPORT (3D Three.js / Split / 2D Hybrid Google Maps) */}
@@ -831,6 +953,7 @@ export const App: React.FC = () => {
               visibleRoutes={visibleRoutes}
               showAllTrails={showAllTrails}
               showPois={showPois}
+              hidePoiBadges={zenMode}
               playerLat={playerLat}
               playerLon={playerLon}
               playerEle={playerEle}
@@ -888,17 +1011,19 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* LIVE FLOATING 360° COMPASS ROSE WIDGET (Tap for Full Tactical Sighting Compass!) */}
-      <FloatingCompassWidget
-        compassHeading={compassHeading}
-        gpsCourse={gpsCourse}
-        lockedTarget={lockedTarget}
-        lockedBearing={lockedBearing}
-        playerLat={playerLat}
-        playerLon={playerLon}
-        hasMagneticWarning={Boolean(magneticWarningReason)}
-        onOpenFullCompass={() => setShowCompassModal(true)}
-      />
+      {/* LIVE FLOATING 360° COMPASS WIDGET (Hidden in Zen Mode) */}
+      {!zenMode && (
+        <FloatingCompassWidget
+          compassHeading={compassHeading}
+          gpsCourse={gpsCourse}
+          lockedTarget={lockedTarget}
+          lockedBearing={lockedBearing}
+          playerLat={playerLat}
+          playerLon={playerLon}
+          hasMagneticWarning={Boolean(magneticWarningReason)}
+          onOpenFullCompass={() => setShowCompassModal(true)}
+        />
+      )}
 
       {/* INTERACTIVE FIELD SIMULATOR CONTROL BAR (For Testing on Web before going to Nui Dinh!) */}
       {simDrawerOpen && (
@@ -989,56 +1114,75 @@ export const App: React.FC = () => {
       {/* TOAST FEEDBACK */}
       {toastMsg && <div className="tactical-toast">{toastMsg}</div>}
 
-      {/* BOTTOM TACTICAL THUMB DOCK */}
-      <nav className="bottom-thumb-dock">
-        <button type="button" className="dock-btn" onClick={() => setShowPinsSheet(true)}>
-          <span className="dock-icon">📍</span>
-          <span className="dock-lbl">Mốc ({userPins.length})</span>
-        </button>
+      {/* ULTRA-SLIM SINGLE-LINE BOTTOM THUMB DOCK */}
+      <nav className={`bottom-thumb-dock ${zenMode ? 'zen-dock' : ''}`}>
+        {zenMode ? (
+          <>
+            <button
+              type="button"
+              className="dock-primary-pin-btn"
+              onPointerDown={handleInstantPoopOrRockDrop}
+            >
+              <span className="pin-bolt">🪨</span>
+              <span className="pin-main-txt">Ghim</span>
+            </button>
+            <button type="button" className="dock-btn" onClick={() => setZenMode(false)}>
+              <span className="dock-icon">👁️</span>
+              <span className="dock-lbl">Mở HUD</span>
+            </button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="dock-btn" onClick={() => setShowPinsSheet(true)}>
+              <span className="dock-icon">📍</span>
+              <span className="dock-lbl">Mốc ({userPins.length})</span>
+            </button>
 
-        <button
-          type="button"
-          className={`dock-btn ${isRecordingTrack ? 'rec-active' : ''}`}
-          onClick={handleBacktrackStart}
-          onContextMenu={(e) => {
-            e.preventDefault();
-            setIsRecordingTrack((v) => !v);
-          }}
-        >
-          <span className="dock-icon">👣</span>
-          <span className="dock-lbl">Đi Ngược</span>
-        </button>
+            <button
+              type="button"
+              className={`dock-btn ${isRecordingTrack ? 'rec-active' : ''}`}
+              onClick={handleBacktrackStart}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setIsRecordingTrack((v) => !v);
+              }}
+            >
+              <span className="dock-icon">👣</span>
+              <span className="dock-lbl">Ngược</span>
+            </button>
 
-        {/* PRIMARY 1-TAP TACTICAL PIN BUTTON */}
-        <button
-          type="button"
-          className="dock-primary-pin-btn"
-          onPointerDown={handleInstantPoopOrRockDrop}
-        >
-          <span className="pin-bolt">🪨</span>
-          <span className="pin-main-txt">GHIM CỤC ĐÁ</span>
-        </button>
+            {/* PRIMARY 1-TAP TACTICAL PIN BUTTON */}
+            <button
+              type="button"
+              className="dock-primary-pin-btn"
+              onPointerDown={handleInstantPoopOrRockDrop}
+            >
+              <span className="pin-bolt">🪨</span>
+              <span className="pin-main-txt">GHIM</span>
+            </button>
 
-        <button
-          type="button"
-          className="dock-btn"
-          onClick={() => {
-            setToolkitInitialTab('decode');
-            setShowToolkitModal(true);
-          }}
-        >
-          <span className="dock-icon">🧩</span>
-          <span className="dock-lbl">Mật Thư</span>
-        </button>
+            <button
+              type="button"
+              className="dock-btn"
+              onClick={() => {
+                setToolkitInitialTab('decode');
+                setShowToolkitModal(true);
+              }}
+            >
+              <span className="dock-icon">🧩</span>
+              <span className="dock-lbl">Công cụ</span>
+            </button>
 
-        <button
-          type="button"
-          className={`dock-btn ${simDrawerOpen || !isSimMode ? 'gps-live' : ''}`}
-          onClick={() => setSimDrawerOpen((v) => !v)}
-        >
-          <span className="dock-icon">{isSimMode ? '🎮' : '🛰️'}</span>
-          <span className="dock-lbl">{isSimMode ? 'Test Rừng' : 'GPS Thật'}</span>
-        </button>
+            <button
+              type="button"
+              className={`dock-btn ${simDrawerOpen || !isSimMode ? 'gps-live' : ''}`}
+              onClick={() => setSimDrawerOpen((v) => !v)}
+            >
+              <span className="dock-icon">{isSimMode ? '🎮' : '🛰️'}</span>
+              <span className="dock-lbl">{isSimMode ? 'Test' : 'GPS'}</span>
+            </button>
+          </>
+        )}
       </nav>
 
       {/* MODALS & SHEETS */}

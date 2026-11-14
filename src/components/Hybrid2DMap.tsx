@@ -515,7 +515,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           className="gmaps-ext-btn"
           title="Mở điểm này trong ứng dụng Google Maps gốc"
         >
-          🗺️ Mở Google Maps
+          🗺️ GMaps
         </a>
       </div>
     </div>

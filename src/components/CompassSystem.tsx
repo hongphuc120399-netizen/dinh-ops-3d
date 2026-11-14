@@ -90,8 +90,8 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
         <span className="fcw-lubber" />
 
         <svg
-          width="66"
-          height="66"
+          width="40"
+          height="40"
           viewBox="0 0 100 100"
           className="fcw-svg"
           style={{ transform: `rotate(${dialRot}deg)` }}
@@ -158,8 +158,8 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
       </div>
 
       <div className="fcw-readout">
-        <strong>{formatBearingCardinal(compassHeading)}</strong>
-        <span>{lockedBearing !== null ? `🔒 ${lockedBearing}°` : '🧭 La bàn'}</span>
+        <strong>{((Math.round(compassHeading) % 360) + 360) % 360}°</strong>
+        {lockedBearing !== null && <span className="fcw-lock-dot">🔒{lockedBearing}°</span>}
       </div>
     </button>
   );
