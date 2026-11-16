@@ -140,22 +140,21 @@ export function resolveRouteColor(
 
 export function getMapOverlayPalette(palette: TacticalPalette = 'slate') {
   const isVivid = palette === 'vivid';
-  const primary =
-    palette === 'amber'
-      ? 0xd49b54
-      : palette === 'olive'
-        ? 0x9ab096
-        : isVivid
-          ? 0x00f5d4
-          : 0x94a3b8;
-  const primaryHex =
-    palette === 'amber'
-      ? '#D49B54'
-      : palette === 'olive'
-        ? '#9AB096'
-        : isVivid
-          ? '#00F5D4'
-          : '#CBD5E1';
+  const isAmber = palette === 'amber';
+  const primary = isAmber
+    ? 0xd49b54
+    : palette === 'olive'
+      ? 0x9ab096
+      : isVivid
+        ? 0x00f5d4
+        : 0x94a3b8;
+  const primaryHex = isAmber
+    ? '#D49B54'
+    : palette === 'olive'
+      ? '#9AB096'
+      : isVivid
+        ? '#00F5D4'
+        : '#CBD5E1';
   return {
     stream: isVivid ? '#38BDF8' : '#4A667A',
     streamOpacity: isVivid ? 0.75 : 0.42,
@@ -172,6 +171,9 @@ export function getMapOverlayPalette(palette: TacticalPalette = 'slate') {
     junctionNum: isVivid ? 0x22d3ee : 0x7b93ab,
     primaryHex,
     primaryNum: primary,
+    beaconCoreNum: isAmber ? 0xfef08a : 0xe0f2fe,
+    beaconGlowNum: isAmber ? 0xf59e0b : 0x38bdf8,
+    beaconHex: isAmber ? '#FEF08A' : '#38BDF8',
     playerCoreNum: isVivid ? 0x00f5d4 : 0xcbd5e1,
     arrowHex: isVivid ? '#30D158' : '#7D9E85',
     arrowNum: isVivid ? 0x30d158 : 0x7d9e85,
@@ -790,6 +792,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       haloMat: THREE.MeshBasicMaterial;
       rangeMat: THREE.MeshBasicMaterial;
       spireMat: THREE.MeshBasicMaterial;
+      spireGlowMat: THREE.MeshBasicMaterial;
+      pillarPulseMat: THREE.MeshBasicMaterial;
       coneMat: THREE.MeshBasicMaterial;
       sightBeamMat: THREE.LineBasicMaterial;
       arrowMat: THREE.MeshBasicMaterial;
@@ -959,7 +963,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     // Core Sphere
     const coreGeo = new THREE.SphereGeometry(14, 20, 20);
-    const coreMat = new THREE.MeshBasicMaterial({ color: initOv.playerCoreNum });
+    const coreMat = new THREE.MeshBasicMaterial({
+      color: initOv.beaconCoreNum,
+      blending: THREE.AdditiveBlending
+    });
     const coreMesh = new THREE.Mesh(coreGeo, coreMat);
     coreMesh.position.y = 16;
     playerGroup.add(coreMesh);
@@ -968,9 +975,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const haloGeo = new THREE.RingGeometry(22, 34, 32);
     haloGeo.rotateX(-Math.PI / 2);
     const haloMat = new THREE.MeshBasicMaterial({
-      color: initOv.primaryNum,
+      color: initOv.beaconGlowNum,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.78,
+      blending: THREE.AdditiveBlending,
       side: THREE.DoubleSide,
       depthWrite: false
     });
@@ -993,16 +1001,51 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     playerGroup.add(rangeMesh);
     staticDisposables.push(rangeGeo, rangeMat);
 
-    // Vertical Locator Spire so player is always visible behind ridges
-    const spireGeo = new THREE.CylinderGeometry(1.5, 4, 110, 8);
-    spireGeo.translate(0, 55, 0);
+    // 420m Sky Light Pillar (Bright core + soft outer aura + ascending pulse ring)
+    const spireGeo = new THREE.CylinderGeometry(2.8, 6.0, 420, 16);
+    spireGeo.translate(0, 210, 0);
     const spireMat = new THREE.MeshBasicMaterial({
-      color: initOv.primaryNum,
+      color: initOv.beaconCoreNum,
       transparent: true,
-      opacity: 0.34,
+      opacity: 0.92,
+      blending: THREE.AdditiveBlending,
       depthWrite: false
     });
     playerGroup.add(new THREE.Mesh(spireGeo, spireMat));
+
+    const spireGlowGeo = new THREE.CylinderGeometry(10, 24, 420, 16, 1, true);
+    spireGlowGeo.translate(0, 210, 0);
+    const spireGlowMat = new THREE.MeshBasicMaterial({
+      color: initOv.beaconGlowNum,
+      transparent: true,
+      opacity: 0.32,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    playerGroup.add(new THREE.Mesh(spireGlowGeo, spireGlowMat));
+
+    const pillarPulseGeo = new THREE.RingGeometry(9, 20, 28);
+    pillarPulseGeo.rotateX(-Math.PI / 2);
+    const pillarPulseMat = new THREE.MeshBasicMaterial({
+      color: initOv.beaconCoreNum,
+      transparent: true,
+      opacity: 0.75,
+      blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const pillarPulseMesh = new THREE.Mesh(pillarPulseGeo, pillarPulseMat);
+    pillarPulseMesh.position.y = 8;
+    playerGroup.add(pillarPulseMesh);
+    staticDisposables.push(
+      spireGeo,
+      spireMat,
+      spireGlowGeo,
+      spireGlowMat,
+      pillarPulseGeo,
+      pillarPulseMat
+    );
 
     // Sensor Compass View Frustum Fan (points along -Z when rotation.y = 0 => Due North!)
     const sectorShape = new THREE.Shape();
@@ -1093,6 +1136,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         haloMat,
         rangeMat,
         spireMat,
+        spireGlowMat,
+        pillarPulseMat,
         coneMat,
         sightBeamMat,
         arrowMat
@@ -1210,9 +1255,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       );
       playerGroup.position.lerp(new THREE.Vector3(px, py, pz), 0.25);
 
-      // Pulse halo
-      const pulse = 1 + Math.sin(performance.now() * 0.0045) * 0.18;
+      // Pulse ground halo & ascending light-pillar ring
+      const nowMs = performance.now();
+      const pulse = 1 + Math.sin(nowMs * 0.0045) * 0.18;
       haloMesh.scale.set(pulse, pulse, pulse);
+      const liftPhase = (nowMs * 0.00055) % 1;
+      pillarPulseMesh.position.y = 8 + liftPhase * 372;
+      const ringScale = 0.78 + liftPhase * 0.65;
+      pillarPulseMesh.scale.set(ringScale, ringScale, ringScale);
+      pillarPulseMat.opacity = (1 - liftPhase) * 0.85;
 
       // Rotate Compass View Cone (clockwise bearing -> negative Y rotation in Three.js!)
       const targetConeRotY = -(st.compassHeading * Math.PI) / 180;
@@ -1454,10 +1505,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     let cancelled = false;
 
     const ov = getMapOverlayPalette(palette);
-    ctx.playerMaterials.coreMat.color.setHex(ov.playerCoreNum);
-    ctx.playerMaterials.haloMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.coreMat.color.setHex(ov.beaconCoreNum);
+    ctx.playerMaterials.haloMat.color.setHex(ov.beaconGlowNum);
     ctx.playerMaterials.rangeMat.color.setHex(ov.primaryNum);
-    ctx.playerMaterials.spireMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.spireMat.color.setHex(ov.beaconCoreNum);
+    ctx.playerMaterials.spireGlowMat.color.setHex(ov.beaconGlowNum);
+    ctx.playerMaterials.pillarPulseMat.color.setHex(ov.beaconCoreNum);
     ctx.playerMaterials.coneMat.color.setHex(ov.primaryNum);
     ctx.playerMaterials.sightBeamMat.color.setHex(ov.playerCoreNum);
     ctx.playerMaterials.arrowMat.color.setHex(ov.arrowNum);
