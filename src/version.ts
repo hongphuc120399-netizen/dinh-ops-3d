@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.0.7',
-  buildNumber: 202611161023,
-  builtAt: '2026-11-16T10:23:08+07:00',
-  note: "Thêm cột sáng 3D cao 420m định vị rõ vị trí của tôi"
+  version: '1.0.8',
+  buildNumber: 202611161127,
+  builtAt: '2026-11-16T11:27:30+07:00',
+  note: "Thêm Mật Thư Decoder (Caesar 25, Morse, A1Z26, Base64, QR/OCR) & Engineering Toolkit"
 };

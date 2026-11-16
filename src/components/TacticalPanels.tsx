@@ -14,12 +14,13 @@ import {
   formatClockDirection,
   formatDistance,
   haversineDistanceM,
-  parseFlexibleCoordinateInput,
   parseGpxText,
   projectPointByBearing,
   sampleDemElevation
 } from '../utils/geoMath';
 import { compressImageFile, downloadNuiDinhOfflineTiles } from '../utils/offlineVault';
+import { CipherDecoderPanel } from './CipherDecoderPanel';
+import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -457,11 +458,15 @@ export const PinsAndPoisSheet: React.FC<PinsAndPoisSheetProps> = ({
 
 interface ReconToolkitModalProps {
   dataset: NuiDinhDataset;
-  initialTab?: 'decode' | 'bearing' | 'offline' | 'ota';
+  initialTab?: 'decode' | 'engineering' | 'bearing' | 'offline' | 'ota';
   initialAvailableOta?: AvailableOtaUpdate | null;
   initialApkUrl?: string | null;
   playerLat: number;
   playerLon: number;
+  pitchDeg?: number;
+  rollDeg?: number;
+  useRealSensor?: boolean;
+  onToggleRealSensor?: (enable: boolean) => void;
   trackPoints: TrackPoint[];
   userPins: UserPin[];
   cachedTileCount: number;
@@ -479,6 +484,10 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   initialApkUrl = null,
   playerLat,
   playerLon,
+  pitchDeg = 0,
+  rollDeg = 0,
+  useRealSensor = false,
+  onToggleRealSensor,
   trackPoints,
   userPins,
   cachedTileCount,
@@ -488,9 +497,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   onFlyTo,
   onClose
 }) => {
-  const [tab, setTab] = useState<'decode' | 'bearing' | 'offline' | 'ota'>(initialTab);
-  const [rawInput, setRawInput] = useState('');
-  const [decodeError, setDecodeError] = useState<string | null>(null);
+  const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
 
   // Bearing Projection State
   const [originId, setOriginId] = useState<string>('current');
@@ -651,29 +658,21 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
     }
   };
 
-  const handleDecodeSubmit = () => {
-    const parsed = parseFlexibleCoordinateInput(rawInput);
-    if (!parsed) {
-      setDecodeError(
-        'Không nhận diện được định dạng. Hãy nhập dạng "10.5389, 107.1295", DMS "10°32\'20"N 107°07\'46"E", mã Plus Code "G4QH+HP", hoặc Link Google Maps!'
-      );
-      return;
-    }
-    setDecodeError(null);
-    const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, parsed.lat, parsed.lon));
+  const handlePinDecodedCoord = (lat: number, lon: number, label: string, note: string) => {
+    const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, lat, lon));
     const solvedPin: UserPin = {
       id: `clue-${Date.now()}`,
-      name: `Mật thư (${parsed.format})`,
+      name: label,
       category: 'clue',
-      lat: parsed.lat,
-      lon: parsed.lon,
+      lat,
+      lon,
       ele,
       accuracy: null,
       createdAt: Date.now(),
-      note: `Giải mã từ: ${rawInput.trim()}`
+      note
     };
     onCreateSolvedPin(solvedPin, true);
-    onFlyTo(parsed.lat, parsed.lon);
+    onFlyTo(lat, lon);
     onClose();
   };
 
@@ -763,11 +762,11 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
 
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="tactical-sheet" onClick={(e) => e.stopPropagation()}>
+      <div className="tactical-sheet tall-sheet" onClick={(e) => e.stopPropagation()}>
         <div className="sheet-handle" />
         <div className="sheet-header">
           <div>
-            <h3>🧩 Bộ Vũ Khí Giải Mật Thư • GPX • Bản Đồ Offline</h3>
+            <h3>🔐 Mật Thư • Kỹ Thuật • Offline &amp; OTA</h3>
             <p className="mono-sub">Hoạt động 100% không cần mạng khi vào rừng sâu</p>
           </div>
           <button type="button" className="icon-close-btn" onClick={onClose}>
@@ -777,7 +776,14 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
 
         <div className="segmented-tabs">
           <button type="button" className={tab === 'decode' ? 'active' : ''} onClick={() => setTab('decode')}>
-            🔎 Mật Thư
+            🔐 Mật Thư
+          </button>
+          <button
+            type="button"
+            className={tab === 'engineering' ? 'active' : ''}
+            onClick={() => setTab('engineering')}
+          >
+            🛠️ Kỹ Thuật
           </button>
           <button type="button" className={tab === 'bearing' ? 'active' : ''} onClick={() => setTab('bearing')}>
             🧭 Chiếu Góc
@@ -790,38 +796,15 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
           </button>
         </div>
 
-        {tab === 'decode' && (
-          <div className="toolkit-body">
-            <p className="helper-note">
-              Nhập bất kỳ dữ kiện nào Ban Tổ Chức phát: <strong>Tọa độ thập phân</strong>,{' '}
-              <strong>Độ-Phút-Giây (DMS)</strong>, <strong>Mã Google Plus Code</strong>, hoặc{' '}
-              <strong>Link Google Maps</strong>:
-            </p>
-            <input
-              type="text"
-              value={rawInput}
-              onChange={(e) => setRawInput(e.target.value)}
-              placeholder='VD: 10.5389, 107.1295 hoặc 10°32&apos;20"N 107°07&apos;46"E hoặc G4QH+HP'
-            />
-            <div className="preset-chips">
-              <button type="button" onClick={() => setRawInput('10.538750, 107.129420')}>
-                Thử: Thập phân La Bàn
-              </button>
-              <button type="button" onClick={() => setRawInput('10°31\'52.6"N 107°07\'43.3"E')}>
-                Thử: DMS Hang Tổ
-              </button>
-              <button type="button" onClick={() => setRawInput('10° 32.325\' N, 107° 07.765\' E')}>
-                Thử: Garmin DDM
-              </button>
-              <button type="button" onClick={() => setRawInput('7P29G4QH+GQ')}>
-                Thử: Plus Code
-              </button>
-            </div>
-            {decodeError && <div className="error-box">{decodeError}</div>}
-            <button type="button" className="primary-action-btn full-w" onClick={handleDecodeSubmit}>
-              🎯 Giải mã & Khóa Mục Tiêu trên 3D
-            </button>
-          </div>
+        {tab === 'decode' && <CipherDecoderPanel onPinCoordinate={handlePinDecodedCoord} />}
+
+        {tab === 'engineering' && (
+          <EngineeringToolkitPanel
+            pitchDeg={pitchDeg}
+            rollDeg={rollDeg}
+            useRealSensor={useRealSensor}
+            onToggleRealSensor={onToggleRealSensor}
+          />
         )}
 
         {tab === 'bearing' && (

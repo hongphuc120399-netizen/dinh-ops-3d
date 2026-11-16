@@ -133,7 +133,9 @@ export const App: React.FC = () => {
   const [pendingPinCoords, setPendingPinCoords] = useState<{ lat: number; lon: number; ele: number } | null>(null);
   const [showPinsSheet, setShowPinsSheet] = useState<boolean>(false);
   const [showToolkitModal, setShowToolkitModal] = useState<boolean>(false);
-  const [toolkitInitialTab, setToolkitInitialTab] = useState<'decode' | 'bearing' | 'offline' | 'ota'>('decode');
+  const [toolkitInitialTab, setToolkitInitialTab] = useState<
+    'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'
+  >('decode');
   const [availableOta, setAvailableOta] = useState<AvailableOtaUpdate | null>(null);
   const [apkReleaseUrl, setApkReleaseUrl] = useState<string | null>(null);
   const [showPrecisionRadar, setShowPrecisionRadar] = useState<boolean>(false);
@@ -1510,6 +1512,10 @@ export const App: React.FC = () => {
           initialApkUrl={apkReleaseUrl}
           playerLat={playerLat}
           playerLon={playerLon}
+          pitchDeg={pitchDeg}
+          rollDeg={rollDeg}
+          useRealSensor={useRealCompassSensor || !isSimMode}
+          onToggleRealSensor={handleToggleRealCompass}
           trackPoints={trackPoints}
           userPins={userPins}
           cachedTileCount={cachedTileCount}
