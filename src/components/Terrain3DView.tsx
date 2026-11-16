@@ -905,6 +905,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       posAttr.setY(i, elevations[i] * verticalScale);
     }
     terrainGeo.computeVertexNormals();
+    terrainGeo.computeBoundingBox();
+    terrainGeo.computeBoundingSphere();
 
     const initPalette = liveStateRef.current.palette || 'slate';
     const initOv = getMapOverlayPalette(initPalette);
@@ -1245,11 +1247,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       frameCounter++;
       const st = liveStateRef.current;
 
-      // Update Player 3D Position & Dual Heading smoothly
+      // Update Player 3D Position & Dual Heading smoothly (anchored directly on 3D triangle mesh!)
+      const groundPlayerEle = sampleDemElevation(
+        dataset.dem,
+        dataset.bounds,
+        st.playerLat,
+        st.playerLon
+      );
       const [px, py, pz] = latLonToWorld3D(
         st.playerLat,
         st.playerLon,
-        st.playerEle,
+        groundPlayerEle,
         dataset.bounds,
         st.verticalScale
       );
@@ -1344,7 +1352,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
         // 1. User Dropped Pins (ALWAYS shown with priority!)
         for (const pin of st.userPins) {
-          const [wx, wy, wz] = latLonToWorld3D(pin.lat, pin.lon, pin.ele, dataset.bounds, st.verticalScale);
+          const pinGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, pin.lat, pin.lon);
+          const [wx, wy, wz] = latLonToWorld3D(pin.lat, pin.lon, pinGroundEle, dataset.bounds, st.verticalScale);
           tempV.set(wx, wy + 78, wz).project(camera);
           if (tempV.z >= -1 && tempV.z <= 1) {
             const sx = (tempV.x * 0.5 + 0.5) * w;
@@ -1400,7 +1409,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
             if (priority < 50) continue;
 
-            const [wx, wy, wz] = latLonToWorld3D(poi.lat, poi.lon, poi.ele, dataset.bounds, st.verticalScale);
+            const poiGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
+            const [wx, wy, wz] = latLonToWorld3D(poi.lat, poi.lon, poiGroundEle, dataset.bounds, st.verticalScale);
             tempV.set(wx, wy + 46, wz).project(camera);
             if (tempV.z >= -1 && tempV.z <= 1) {
               const sx = (tempV.x * 0.5 + 0.5) * w;
@@ -1496,6 +1506,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     }
     posAttr.needsUpdate = true;
     ctx.terrainMesh.geometry.computeVertexNormals();
+    ctx.terrainMesh.geometry.computeBoundingBox();
+    ctx.terrainMesh.geometry.computeBoundingSphere();
   }, [dataset, verticalScale]);
 
   // 3. Switch 3D Terrain Skin & Spec-Ops Palette (Slate / Olive / Amber / Vivid)
@@ -1586,7 +1598,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       colorHex: string,
       liftM: number,
       opacity = 0.9,
-      maxStepM = 40
+      maxStepM = 18
     ) => {
       const clippedRuns = clipAndSubdividePolylineToBounds(coords, dataset.bounds, maxStepM);
       if (clippedRuns.length === 0) return;
@@ -1612,13 +1624,13 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     // Streams in 3D valleys (clipped cleanly to 3D mountain plinth)
     for (const s of dataset.streams) {
-      addDrapedPolylineClipped(s.coords, ov.stream, 2.5, ov.streamOpacity, 35);
+      addDrapedPolylineClipped(s.coords, ov.stream, 3.5, ov.streamOpacity, 18);
     }
 
-    // 220kV High-Voltage Powerline Corridor (clipped to plinth & subdivided every 35m over ridges!)
+    // 220kV High-Voltage Powerline Corridor (clipped to plinth & subdivided every 18m over ridges!)
     if (dataset.powerlines) {
       for (const pl of dataset.powerlines) {
-        addDrapedPolylineClipped(pl.coords, ov.power, 14.0, ov.powerOpacity, 35);
+        addDrapedPolylineClipped(pl.coords, ov.power, 14.0, ov.powerOpacity, 18);
       }
     }
 
@@ -1635,7 +1647,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const trailOp = palette !== 'vivid' ? 0.28 : skin === 'tactical' ? 0.38 : 0.45;
       for (const t of dataset.trails) {
         if (t.routes.length > 0) continue; // drawn brighter by routes below
-        addDrapedPolylineClipped(t.coords, trailCol, 3.5, trailOp, 40);
+        addDrapedPolylineClipped(t.coords, trailCol, 4.2, trailOp, 18);
       }
     }
 
@@ -1644,15 +1656,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       if (visibleRoutes[r.id] === false) continue;
       const routeCol = resolveRouteColor(r.id, r.color, palette);
       for (const seg of r.segments) {
-        addDrapedPolylineClipped(seg, routeCol, 6.5, palette === 'vivid' ? 0.95 : 0.85, 35);
-        addDrapedPolylineClipped(seg, routeCol, 8.2, palette === 'vivid' ? 0.65 : 0.52, 35);
+        addDrapedPolylineClipped(seg, routeCol, 6.5, palette === 'vivid' ? 0.95 : 0.85, 18);
+        addDrapedPolylineClipped(seg, routeCol, 8.2, palette === 'vivid' ? 0.65 : 0.52, 18);
       }
     }
 
     // Imported GPX Routes
     for (const gpx of importedGpx) {
       const coords = gpx.points.map(([lat, lon]) => [lat, lon] as [number, number]);
-      addDrapedPolylineClipped(coords, gpx.color, 9.5, 0.9, 35);
+      addDrapedPolylineClipped(coords, gpx.color, 9.5, 0.9, 18);
     }
 
     // 3D Force-Field Walls around Military Shooting Range & Deep Quarries
@@ -1697,10 +1709,11 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       addDrapedPolylineClipped(clippedPoly, wallHex, wallHeight, ov.hazardLineOpacity, 50);
     }
 
-    // Hazard Beacons & Trail Junction Rings
+    // Hazard Beacons & Trail Junction Rings (anchored strictly to triangle mesh elevation!)
     for (const poi of dataset.pois) {
       if (poi.category === 'warning') {
-        const [hx, hy, hz] = latLonToWorld3D(poi.lat, poi.lon, poi.ele, dataset.bounds, verticalScale);
+        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
+        const [hx, hy, hz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
         const ringGeo = new THREE.RingGeometry(18, 30, 24);
         ringGeo.rotateX(-Math.PI / 2);
         ringGeo.translate(hx, hy + 4.5, hz);
@@ -1721,7 +1734,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         });
         grp.add(new THREE.Mesh(beamGeo, beamMat));
       } else if (poi.category === 'junction') {
-        const [jx, jy, jz] = latLonToWorld3D(poi.lat, poi.lon, poi.ele, dataset.bounds, verticalScale);
+        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
+        const [jx, jy, jz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
         const jRingGeo = new THREE.RingGeometry(12, 20, 20);
         jRingGeo.rotateX(-Math.PI / 2);
         jRingGeo.translate(jx, jy + 5, jz);
@@ -1745,7 +1759,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     for (const pin of userPins) {
       const meta = PIN_EMOJI[pin.category] || PIN_EMOJI.rock;
-      const [x, y, z] = latLonToWorld3D(pin.lat, pin.lon, pin.ele, dataset.bounds, verticalScale);
+      const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, pin.lat, pin.lon);
+      const [x, y, z] = latLonToWorld3D(pin.lat, pin.lon, groundEle, dataset.bounds, verticalScale);
       const col = new THREE.Color(meta.color);
 
       // Vertical Light Pillar (75m tall so you spot your pinned rock over ridges!)
@@ -1807,7 +1822,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           [rayEnd.lat, rayEnd.lon]
         ],
         dataset.bounds,
-        35
+        18
       );
       for (const run of rayRuns) {
         if (run.length < 2) continue;
@@ -1824,11 +1839,18 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     if (!lockedTarget) return;
 
-    const [sx, sy, sz] = latLonToWorld3D(playerLat, playerLon, playerEle, dataset.bounds, verticalScale);
+    const startGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon);
+    const targetGroundEle = sampleDemElevation(
+      dataset.dem,
+      dataset.bounds,
+      lockedTarget.lat,
+      lockedTarget.lon
+    );
+    const [sx, sy, sz] = latLonToWorld3D(playerLat, playerLon, startGroundEle, dataset.bounds, verticalScale);
     const [tx, ty, tz] = latLonToWorld3D(
       lockedTarget.lat,
       lockedTarget.lon,
-      lockedTarget.ele,
+      targetGroundEle,
       dataset.bounds,
       verticalScale
     );

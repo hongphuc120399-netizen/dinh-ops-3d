@@ -4,9 +4,27 @@ const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
 const EARTH_RADIUS_M = 6371000;
 
-// At Nui Dinh (~10.5385°N):
-export const METERS_PER_DEG_LAT = 110605.0;
-export const METERS_PER_DEG_LON = 111319.5 * Math.cos(10.5385 * DEG_TO_RAD); // ~109,442.8 m
+/**
+ * Exact WGS84 ellipsoid meters-per-degree scaling at latitude phi.
+ */
+export function wgs84MetersPerDeg(latDeg: number): { mPerLat: number; mPerLon: number } {
+  const phi = latDeg * DEG_TO_RAD;
+  const mPerLat =
+    111132.92 -
+    559.82 * Math.cos(2 * phi) +
+    1.175 * Math.cos(4 * phi) -
+    0.0023 * Math.cos(6 * phi);
+  const mPerLon =
+    111412.84 * Math.cos(phi) -
+    93.5 * Math.cos(3 * phi) +
+    0.118 * Math.cos(5 * phi);
+  return { mPerLat, mPerLon };
+}
+
+// At Nui Dinh (~10.5385°N) under WGS84 ellipsoid:
+const NUI_DINH_WGS84 = wgs84MetersPerDeg(10.5385);
+export const METERS_PER_DEG_LAT = NUI_DINH_WGS84.mPerLat; // 110,611.42 m
+export const METERS_PER_DEG_LON = NUI_DINH_WGS84.mPerLon; // 109,454.00 m
 
 export function getWorldDimensions(bounds: GeoBounds) {
   const widthM = (bounds.east - bounds.west) * METERS_PER_DEG_LON;
@@ -46,7 +64,7 @@ export function world3DToLatLon(x: number, z: number, bounds: GeoBounds): { lat:
 }
 
 /**
- * Fast Bilinear Interpolation on our 192x192 SRTM DEM Grid (100% Offline)
+ * Exact Triangular Barycentric Interpolation matching Three.js PlaneGeometry diagonals (tx + ty <= 1)
  */
 export function sampleDemElevation(dem: DemGrid, bounds: GeoBounds, lat: number, lon: number): number {
   const rawU = (lon - bounds.west) / (bounds.east - bounds.west);
@@ -66,9 +84,10 @@ export function sampleDemElevation(dem: DemGrid, bounds: GeoBounds, lat: number,
   const e01 = dem.elevations[(y0 + 1) * dem.cols + x0];
   const e11 = dem.elevations[(y0 + 1) * dem.cols + (x0 + 1)];
 
-  const top = e00 * (1 - tx) + e10 * tx;
-  const bot = e01 * (1 - tx) + e11 * tx;
-  return top * (1 - ty) + bot * ty;
+  if (tx + ty <= 1) {
+    return e00 + tx * (e10 - e00) + ty * (e01 - e00);
+  }
+  return e11 + (1 - tx) * (e01 - e11) + (1 - ty) * (e10 - e11);
 }
 
 /**
@@ -87,6 +106,10 @@ export function sampleDemSlopeDeg(dem: DemGrid, bounds: GeoBounds, lat: number, 
 }
 
 export function haversineDistanceM(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  if (Math.abs(lat2 - lat1) < 2 && Math.abs(lon2 - lon1) < 2) {
+    const { mPerLat, mPerLon } = wgs84MetersPerDeg((lat1 + lat2) / 2);
+    return Math.hypot((lon2 - lon1) * mPerLon, (lat2 - lat1) * mPerLat);
+  }
   const dLat = (lat2 - lat1) * DEG_TO_RAD;
   const dLon = (lon2 - lon1) * DEG_TO_RAD;
   const a =
@@ -96,6 +119,12 @@ export function haversineDistanceM(lat1: number, lon1: number, lat2: number, lon
 }
 
 export function computeBearingDeg(lat1: number, lon1: number, lat2: number, lon2: number): number {
+  if (Math.abs(lat2 - lat1) < 2 && Math.abs(lon2 - lon1) < 2) {
+    const { mPerLat, mPerLon } = wgs84MetersPerDeg((lat1 + lat2) / 2);
+    const dx = (lon2 - lon1) * mPerLon;
+    const dy = (lat2 - lat1) * mPerLat;
+    return ((Math.atan2(dx, dy) * RAD_TO_DEG) + 360) % 360;
+  }
   const phi1 = lat1 * DEG_TO_RAD;
   const phi2 = lat2 * DEG_TO_RAD;
   const dLam = (lon2 - lon1) * DEG_TO_RAD;
@@ -110,24 +139,13 @@ export function projectPointByBearing(
   bearingDeg: number,
   distanceM: number
 ): { lat: number; lon: number } {
-  const angDist = distanceM / EARTH_RADIUS_M;
   const brng = bearingDeg * DEG_TO_RAD;
-  const phi1 = lat * DEG_TO_RAD;
-  const lam1 = lon * DEG_TO_RAD;
-
-  const phi2 = Math.asin(
-    Math.sin(phi1) * Math.cos(angDist) + Math.cos(phi1) * Math.sin(angDist) * Math.cos(brng)
-  );
-  const lam2 =
-    lam1 +
-    Math.atan2(
-      Math.sin(brng) * Math.sin(angDist) * Math.cos(phi1),
-      Math.cos(angDist) - Math.sin(phi1) * Math.sin(phi2)
-    );
-
+  const { mPerLat, mPerLon } = wgs84MetersPerDeg(lat);
+  const dx = distanceM * Math.sin(brng);
+  const dy = distanceM * Math.cos(brng);
   return {
-    lat: Number((phi2 * RAD_TO_DEG).toFixed(6)),
-    lon: Number((lam2 * RAD_TO_DEG).toFixed(6))
+    lat: Number((lat + dy / mPerLat).toFixed(6)),
+    lon: Number((lon + dx / mPerLon).toFixed(6))
   };
 }
 
@@ -736,8 +754,7 @@ export function intersectTwoBearings(
   lon2: number,
   brng2Deg: number
 ): BearingIntersectionResult {
-  const mPerLon = 111319.5 * Math.cos(((lat1 + lat2) / 2) * DEG_TO_RAD);
-  const mPerLat = METERS_PER_DEG_LAT;
+  const { mPerLat, mPerLon } = wgs84MetersPerDeg((lat1 + lat2) / 2);
   const dx = (lon2 - lon1) * mPerLon;
   const dy = (lat2 - lat1) * mPerLat;
   const baselineM = Math.hypot(dx, dy);
@@ -794,8 +811,7 @@ export function intersectTwoCircles(
   lon2: number,
   r2M: number
 ): CircleIntersectionResult {
-  const mPerLon = 111319.5 * Math.cos(((lat1 + lat2) / 2) * DEG_TO_RAD);
-  const mPerLat = METERS_PER_DEG_LAT;
+  const { mPerLat, mPerLon } = wgs84MetersPerDeg((lat1 + lat2) / 2);
   const dx = (lon2 - lon1) * mPerLon;
   const dy = (lat2 - lat1) * mPerLat;
   const d = Math.hypot(dx, dy);
