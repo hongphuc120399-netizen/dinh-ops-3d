@@ -35,6 +35,7 @@ interface Hybrid2DMapProps {
   headingUp: boolean;
   tacticalTone: boolean;
   onToggleHeadingUp: () => void;
+  onMapInteractionChange?: (active: boolean) => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -169,6 +170,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   headingUp,
   tacticalTone,
   onToggleHeadingUp,
+  onMapInteractionChange,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
@@ -198,12 +200,18 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   const playerMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
 
-  const callbacksRef = useRef({ onRequestPinAt, onSimMoveTo, isSimMode });
-  callbacksRef.current = { onRequestPinAt, onSimMoveTo, isSimMode };
+  const callbacksRef = useRef({ onRequestPinAt, onSimMoveTo, isSimMode, onMapInteractionChange });
+  callbacksRef.current = { onRequestPinAt, onSimMoveTo, isSimMode, onMapInteractionChange };
 
   // 1. Initialize Leaflet Map
   useEffect(() => {
     if (!divRef.current || !wrapperRef.current) return;
+    const hostEl = divRef.current;
+    const onHostPointerDown = () => callbacksRef.current.onMapInteractionChange?.(true);
+    const onHostPointerUp = () => callbacksRef.current.onMapInteractionChange?.(false);
+    hostEl.addEventListener('pointerdown', onHostPointerDown);
+    window.addEventListener('pointerup', onHostPointerUp);
+    window.addEventListener('pointercancel', onHostPointerUp);
     const map = L.map(divRef.current, {
       center: [dataset.center[0], dataset.center[1]],
       zoom: 14,
@@ -399,6 +407,9 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     ro.observe(divRef.current);
 
     return () => {
+      hostEl.removeEventListener('pointerdown', onHostPointerDown);
+      window.removeEventListener('pointerup', onHostPointerUp);
+      window.removeEventListener('pointercancel', onHostPointerUp);
       roWrap.disconnect();
       ro.disconnect();
       map.remove();
@@ -672,6 +683,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         <span className="thc tr" />
         <span className="thc bl" />
         <span className="thc br" />
+        <span className="tactical-center-crosshair" />
       </div>
       <div className="map-2d-floating-controls">
         <button
@@ -680,7 +692,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           onClick={onToggleHeadingUp}
           title={headingUp ? 'Đang xoay bản đồ 2D theo điện thoại' : 'Bật xoay bản đồ 2D theo hướng điện thoại'}
         >
-          {headingUp ? '🧭 Theo máy' : '⬆️ Bắc'}
+          {headingUp ? 'H-UP' : 'BẮC'}
         </button>
         <button
           type="button"
@@ -690,7 +702,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           }}
           title="Đưa bản đồ về vị trí của tôi"
         >
-          🎯 Tôi
+          TÔI
         </button>
         <a
           href={`https://www.google.com/maps/search/?api=1&query=${lockedTarget ? `${lockedTarget.lat},${lockedTarget.lon}` : `${playerLat},${playerLon}`}`}
@@ -699,7 +711,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           className="gmaps-ext-btn"
           title="Mở điểm này trong ứng dụng Google Maps gốc"
         >
-          🗺️ GMaps
+          GMAPS
         </a>
       </div>
     </div>

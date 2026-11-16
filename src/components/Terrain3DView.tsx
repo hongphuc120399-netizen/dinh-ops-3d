@@ -52,6 +52,7 @@ interface Terrain3DViewProps {
   syntheticLandscape?: boolean;
   headingUp: boolean;
   onToggleHeadingUp: () => void;
+  onMapInteractionChange?: (active: boolean) => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -111,6 +112,17 @@ function clearAndDisposeGroup(grp: THREE.Group): void {
       }
     }
   }
+}
+
+function formatTacticalCallout(rawName: string): string {
+  const withoutParens = rawName.replace(/\([^)]*\)/g, '').trim();
+  const base = withoutParens.split(/[•\-–]/)[0]?.trim() || withoutParens;
+  const cleaned = base
+    .replace(/^[\p{Extended_Pictographic}\uFE0F\u200D\s]+/gu, '')
+    .replace(/^Vùng\s+/i, '')
+    .trim();
+  const text = (cleaned || rawName).toUpperCase();
+  return text.length > 22 ? `${text.slice(0, 21).trimEnd()}…` : text;
 }
 
 function createCardinalSprite(label: string, color: string): {
@@ -192,41 +204,41 @@ function buildProceduralTerrainCanvas(
       let r = 0, g = 0, b = 0;
 
       if (mode === 'tactical') {
-        // High-Contrast Military Gunmetal-Slate-Olive Recon Skin
+        // High-Contrast Obsidian-Teal & Dark Olive Spec-Ops Recon Skin
         if (ele < 25) {
-          r = 11; g = 18; b = 26;
+          r = 5; g = 10; b = 15;
         } else if (ele < 110) {
           const t = (ele - 25) / 85;
-          r = 14 + t * 10;
-          g = 24 + t * 14;
-          b = 32 + t * 6;
+          r = 5 + t * 5;
+          g = 10 + t * 11;
+          b = 15 + t * 15;
         } else if (ele < 260) {
           const t = (ele - 110) / 150;
-          r = 24 + t * 14;
-          g = 38 + t * 16;
-          b = 38 + t * 4;
+          r = 10 + t * 7;
+          g = 21 + t * 13;
+          b = 30 + t * 7;
         } else if (ele < 400) {
           const t = (ele - 260) / 140;
-          r = 38 + t * 18;
-          g = 54 + t * 16;
-          b = 42 + t * 6;
+          r = 17 + t * 10;
+          g = 34 + t * 15;
+          b = 37 - t * 4;
         } else {
           const t = Math.min(1, (ele - 400) / 115);
-          r = 56 + t * 26;
-          g = 70 + t * 22;
-          b = 48 + t * 14;
+          r = 27 + t * 16;
+          g = 49 + t * 17;
+          b = 33 + t * 13;
         }
 
         if (slope > 0.62) {
           const cliffFactor = Math.min(1, (slope - 0.62) * 2.3);
-          r = r * (1 - cliffFactor) + 190 * cliffFactor;
-          g = g * (1 - cliffFactor) + 74 * cliffFactor;
-          b = b * (1 - cliffFactor) + 52 * cliffFactor;
+          r = r * (1 - cliffFactor) + 195 * cliffFactor;
+          g = g * (1 - cliffFactor) + 64 * cliffFactor;
+          b = b * (1 - cliffFactor) + 48 * cliffFactor;
         }
 
-        r *= shade * 1.06;
-        g *= shade * 1.06;
-        b *= shade * 1.06;
+        r *= shade * 1.1;
+        g *= shade * 1.1;
+        b *= shade * 1.1;
 
         // Sharp 100m amber primary & 25m cyan secondary contours
         if (ele > 15) {
@@ -234,13 +246,13 @@ function buildProceduralTerrainCanvas(
           const mod25 = ele % 25;
           const tol = Math.max(0.32, slope * 1.55);
           if (mod100 < tol || 100 - mod100 < tol) {
-            r = r * 0.38 + 255 * 0.62;
-            g = g * 0.38 + 210 * 0.62;
-            b = b * 0.38 + 40 * 0.62;
+            r = r * 0.35 + 255 * 0.65;
+            g = g * 0.35 + 206 * 0.65;
+            b = b * 0.35 + 36 * 0.65;
           } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
-            r = r * 0.68 + 56 * 0.32;
-            g = g * 0.68 + 189 * 0.32;
-            b = b * 0.68 + 248 * 0.32;
+            r = r * 0.66 + 42 * 0.34;
+            g = g * 0.66 + 195 * 0.34;
+            b = b * 0.66 + 245 * 0.34;
           }
         }
 
@@ -248,9 +260,9 @@ function buildProceduralTerrainCanvas(
         const mx = Math.min(x % 96, 96 - (x % 96));
         const my = Math.min(y % 96, 96 - (y % 96));
         if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
-          r += 18;
-          g += 68;
-          b += 72;
+          r += 16;
+          g += 72;
+          b += 76;
         }
       } else if (mode === 'night') {
         // Tactical Night Vision Recon Skin
@@ -439,6 +451,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   syntheticLandscape = false,
   headingUp,
   onToggleHeadingUp,
+  onMapInteractionChange,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
@@ -482,7 +495,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     lockedTarget,
     isSimMode,
     syntheticLandscape,
-    headingUp
+    headingUp,
+    onMapInteractionChange
   });
   liveStateRef.current = {
     playerLat,
@@ -499,7 +513,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     lockedTarget,
     isSimMode,
     syntheticLandscape,
-    headingUp
+    headingUp,
+    onMapInteractionChange
   };
 
   useEffect(() => {
@@ -862,6 +877,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     const onPointerDown = (e: PointerEvent) => {
       setShowGestureHint(false);
+      liveStateRef.current.onMapInteractionChange?.(true);
       pointerDownPos.x = e.clientX;
       pointerDownPos.y = e.clientY;
       pointerDownPos.time = performance.now();
@@ -882,6 +898,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     };
 
     const onPointerUp = () => {
+      liveStateRef.current.onMapInteractionChange?.(false);
       if (longPressTimer) {
         window.clearTimeout(longPressTimer);
         longPressTimer = null;
@@ -1072,12 +1089,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             if (tempV.z >= -1 && tempV.z <= 1) {
               const sx = (tempV.x * 0.5 + 0.5) * w;
               const sy = (-tempV.y * 0.5 + 0.5) * h;
-              if (sx > 20 && sx < w - 20 && sy > 40 && sy < h - 44) {
+              const safeMarginX = Math.min(86, w * 0.2);
+              if (sx > safeMarginX && sx < w - safeMarginX && sy > 36 && sy < h - 42) {
                 const stStyle = POI_STYLE[poi.category] || { emoji: '📍', color: '#94A3B8' };
-                const cleanSub = poi.name.includes(`${poi.ele}m`) ? undefined : `${poi.ele}m`;
+                const shortLabel = formatTacticalCallout(poi.name);
+                const cleanSub = shortLabel.includes(`${poi.ele}M`) ? undefined : `${poi.ele}m`;
                 candidates.push({
                   id: poi.id,
-                  label: poi.name,
+                  label: shortLabel,
                   sub: cleanSub,
                   emoji: stStyle.emoji,
                   color: stStyle.color,
@@ -1092,14 +1111,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           }
 
           candidates.sort((a, b) => b.priority - a.priority);
-          const maxPois = h < 500 ? 5 : 8;
+          const maxPois = h < 500 ? 4 : 6;
           let placedPoiCount = 0;
           for (const cand of candidates) {
             if (!cand.isLocked) {
               if (placedPoiCount >= maxPois) continue;
               const collides = nextBadges.some((placed) => {
                 const reqX = (placed.label.length + cand.label.length) * 3.4 + 48;
-                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 32;
+                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 34;
               });
               if (collides) continue;
               placedPoiCount++;
@@ -1554,6 +1573,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         <span className="thc tr" />
         <span className="thc bl" />
         <span className="thc br" />
+        <span className="tactical-center-crosshair" />
       </div>
       {/* Projected 3D Interactive Badges */}
       <div className="badges-3d-layer">
@@ -1586,7 +1606,11 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
               }
             }}
           >
-            {(b.label.codePointAt(0) ?? 0) < 0x2000 && <span className="badge-emoji">{b.emoji}</span>}
+            {b.isUserPin ? (
+              <span className="badge-emoji">{b.emoji}</span>
+            ) : (
+              <span className="badge-dot" style={{ background: b.color }} />
+            )}
             <span className="badge-text">{b.label}</span>
             {b.sub && <span className="badge-sub">{b.sub}</span>}
           </button>
@@ -1611,15 +1635,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           }
         >
           <svg
-            width="16"
-            height="16"
+            width="14"
+            height="14"
             viewBox="0 0 24 24"
             style={{ transform: `rotate(${-camAzimuthDeg}deg)` }}
           >
             <polygon points="12,2 8.5,12 15.5,12" fill="#FF3B30" />
             <polygon points="12,22 8.5,12 15.5,12" fill="#CBD5E1" />
           </svg>
-          <span>{headingUp ? 'Theo máy' : 'Bắc'}</span>
+          <span>{headingUp ? 'H-UP' : 'BẮC'}</span>
         </button>
 
         <button
@@ -1628,7 +1652,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           onClick={focusPlayer3D}
           title="Đưa camera 3D về vị trí của tôi"
         >
-          🎯 Tôi
+          TÔI
         </button>
       </div>
 

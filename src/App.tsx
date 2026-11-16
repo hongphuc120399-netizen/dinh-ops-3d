@@ -48,6 +48,11 @@ import {
 
 const dataset = rawDataset as unknown as NuiDinhDataset;
 
+function formatSpecOpsClock(d = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+}
+
 const SIM_PRESETS = [
   { id: 'hbs', label: '⛺ Hồ Bên Suối Dinh', lat: 10.51615, lon: 107.11735 },
   { id: 'suoida', label: '🌊 Suối Đá Thác Hạ', lat: 10.518913, lon: 107.119888 },
@@ -141,6 +146,9 @@ export const App: React.FC = () => {
   const [quickOtaProgress, setQuickOtaProgress] = useState<number | null>(null);
   const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
   const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
+  const [clockText, setClockText] = useState<string>(() => formatSpecOpsClock());
+  const [isMapDragging, setIsMapDragging] = useState<boolean>(false);
+  const [isHudIdle, setIsHudIdle] = useState<boolean>(false);
 
   const playerEle = useMemo(
     () => Math.round(sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon)),
@@ -189,6 +197,28 @@ export const App: React.FC = () => {
       window.removeEventListener('orientationchange', syncViewportState);
     };
   }, [forceLandscape]);
+
+  // Real-time 24h Military Clock & Auto-Dim Idle HUD
+  useEffect(() => {
+    const clockTimer = window.setInterval(() => {
+      setClockText(formatSpecOpsClock());
+    }, 1000);
+
+    let idleTimer: number | null = null;
+    const resetIdle = () => {
+      setIsHudIdle(false);
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      idleTimer = window.setTimeout(() => setIsHudIdle(true), 6000);
+    };
+    resetIdle();
+    window.addEventListener('pointerdown', resetIdle, { passive: true });
+
+    return () => {
+      window.clearInterval(clockTimer);
+      if (idleTimer !== null) window.clearTimeout(idleTimer);
+      window.removeEventListener('pointerdown', resetIdle);
+    };
+  }, []);
 
   const handleToggleForceLandscape = useCallback(() => {
     type LockableOrientation = ScreenOrientation & {
@@ -696,11 +726,15 @@ export const App: React.FC = () => {
   }, [trackPoints, triggerFlyTo, triggerToast]);
 
   return (
-    <div className={`app-shell ${syntheticLandscape ? 'synthetic-landscape' : ''}`}>
-      {/* ULTRA-COMPACT LANDSCAPE TOP MICRO-HUD */}
+    <div
+      className={`app-shell ${syntheticLandscape ? 'synthetic-landscape' : ''} ${
+        isMapDragging ? 'hud-dragging' : isHudIdle ? 'hud-idle' : ''
+      }`}
+    >
+      {/* SPEC-OPS TACTICAL TOP MICRO-HUD */}
       <header className="top-hud-bar">
         <div className="hud-top-row">
-          {/* Left Floating Telemetry Micro-Pill */}
+          {/* Left Floating Telemetry Micro-Bar */}
           <div className="hud-tele-pill">
             <span
               className={`pulse-dot ${isOnline ? 'online' : 'offline'}`}
@@ -719,14 +753,18 @@ export const App: React.FC = () => {
                   : 'Phiên bản & Cập nhật OTA'
               }
             >
-              {availableOta ? `🔄 v${availableOta.version}!` : `v${APP_BUILD_INFO.version}`}
+              {availableOta ? `OTA ${availableOta.version}!` : `v${APP_BUILD_INFO.version}`}
             </button>
+
+            <span className="tactical-clock-chip" title="Đồng hồ tác chiến 24h">
+              {clockText}
+            </span>
 
             {!zenMode && (
               <>
                 <span className="tele-mini-sep" />
                 <span className="tele-inline" title="Độ cao hiện tại">
-                  ⛰️ <strong>{playerEle}m</strong>
+                  <small>ALT</small> <strong>{playerEle}M</strong>
                 </span>
                 <button
                   type="button"
@@ -734,16 +772,16 @@ export const App: React.FC = () => {
                   onClick={() => setShowCompassModal(true)}
                   title="Bấm mở La Bàn Chiến Thuật 360°"
                 >
-                  🧭 <strong>{formatBearingCardinal(compassHeading)}</strong>
+                  <strong>{formatBearingCardinal(compassHeading)}</strong>
                 </button>
                 <span className="tele-inline hide-narrow" title="Hướng di chuyển GPS">
-                  🛰️{' '}
+                  <small>CRS</small>{' '}
                   <strong className="text-emerald">
-                    {gpsCourse !== null ? `${Math.round(gpsCourse)}°` : '--'}
+                    {gpsCourse !== null ? `${String(Math.round(gpsCourse)).padStart(3, '0')}°` : '--'}
                   </strong>
                 </span>
                 <span className="tele-inline hide-narrow" title="Quãng đường vết chân đã đi">
-                  👣 <strong>{formatDistance(totalTrackDistanceM)}</strong>
+                  <small>TRK</small> <strong>{formatDistance(totalTrackDistanceM)}</strong>
                 </span>
               </>
             )}
@@ -1106,6 +1144,7 @@ export const App: React.FC = () => {
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
               onToggleHeadingUp={handleToggleHeadingUp}
+              onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);
@@ -1141,6 +1180,7 @@ export const App: React.FC = () => {
               headingUp={headingUp}
               tacticalTone={tacticalTone2D}
               onToggleHeadingUp={handleToggleHeadingUp}
+              onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);
@@ -1262,28 +1302,29 @@ export const App: React.FC = () => {
       {/* TOAST FEEDBACK */}
       {toastMsg && <div className="tactical-toast">{toastMsg}</div>}
 
-      {/* ULTRA-SLIM SINGLE-LINE BOTTOM THUMB DOCK */}
+      {/* SPEC-OPS SINGLE-LINE BOTTOM COMMAND DOCK */}
       <nav className={`bottom-thumb-dock ${zenMode ? 'zen-dock' : ''}`}>
         {zenMode ? (
           <>
+            <span className="zen-tele-readout">
+              {clockText.slice(0, 5)} •{' '}
+              {String(((Math.round(compassHeading) % 360) + 360) % 360).padStart(3, '0')}°
+            </span>
             <button
               type="button"
               className="dock-primary-pin-btn"
               onPointerDown={handleInstantPoopOrRockDrop}
             >
-              <span className="pin-bolt">🪨</span>
-              <span className="pin-main-txt">Ghim</span>
+              <span className="pin-main-txt">+ GHIM</span>
             </button>
             <button type="button" className="dock-btn" onClick={() => setZenMode(false)}>
-              <span className="dock-icon">👁️</span>
-              <span className="dock-lbl">Mở HUD</span>
+              <span className="dock-lbl">MỞ HUD</span>
             </button>
           </>
         ) : (
           <>
             <button type="button" className="dock-btn" onClick={() => setShowPinsSheet(true)}>
-              <span className="dock-icon">📍</span>
-              <span className="dock-lbl">Mốc ({userPins.length})</span>
+              <span className="dock-lbl">MỐC ({userPins.length})</span>
             </button>
 
             <button
@@ -1295,8 +1336,7 @@ export const App: React.FC = () => {
                 setIsRecordingTrack((v) => !v);
               }}
             >
-              <span className="dock-icon">👣</span>
-              <span className="dock-lbl">Ngược</span>
+              <span className="dock-lbl">NGƯỢC</span>
             </button>
 
             {/* PRIMARY 1-TAP TACTICAL PIN BUTTON */}
@@ -1305,8 +1345,7 @@ export const App: React.FC = () => {
               className="dock-primary-pin-btn"
               onPointerDown={handleInstantPoopOrRockDrop}
             >
-              <span className="pin-bolt">🪨</span>
-              <span className="pin-main-txt">GHIM</span>
+              <span className="pin-main-txt">+ GHIM</span>
             </button>
 
             <button
@@ -1317,8 +1356,7 @@ export const App: React.FC = () => {
                 setShowToolkitModal(true);
               }}
             >
-              <span className="dock-icon">🧩</span>
-              <span className="dock-lbl">Công cụ</span>
+              <span className="dock-lbl">CÔNG CỤ</span>
             </button>
 
             <button
@@ -1326,8 +1364,7 @@ export const App: React.FC = () => {
               className={`dock-btn ${simDrawerOpen || !isSimMode ? 'gps-live' : ''}`}
               onClick={() => setSimDrawerOpen((v) => !v)}
             >
-              <span className="dock-icon">{isSimMode ? '🎮' : '🛰️'}</span>
-              <span className="dock-lbl">{isSimMode ? 'Test' : 'GPS'}</span>
+              <span className="dock-lbl">{isSimMode ? 'TEST' : 'GPS'}</span>
             </button>
           </>
         )}

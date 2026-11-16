@@ -90,8 +90,8 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
         <span className="fcw-lubber" />
 
         <svg
-          width="40"
-          height="40"
+          width="36"
+          height="36"
           viewBox="0 0 100 100"
           className="fcw-svg"
           style={{ transform: `rotate(${dialRot}deg)` }}
@@ -261,9 +261,11 @@ export const TacticalCompassTape: React.FC<TacticalCompassTapeProps> = ({
         )}
       </div>
       <span className="tape-lubber" />
-      <div className="tape-center-deg">
-        <span>{String(normHeading).padStart(3, '0')}°</span>
-        {headingUp && <span className="tape-hup-tag">H</span>}
+      <div className="tape-center-mask">
+        <div className="tape-center-deg">
+          <span>{String(normHeading).padStart(3, '0')}°</span>
+          {headingUp && <span className="tape-hup-tag">H</span>}
+        </div>
       </div>
     </div>
   );

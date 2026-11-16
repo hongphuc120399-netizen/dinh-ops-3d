@@ -55,6 +55,28 @@ button:active {
   flex-direction: column;
 }
 
+.top-hud-bar,
+.bottom-thumb-dock,
+.floating-compass-widget,
+.floating-3d-right-stack,
+.map-2d-floating-controls,
+.tactical-coord-tag {
+  transition: opacity 180ms ease-out;
+}
+.app-shell.hud-idle .top-hud-bar,
+.app-shell.hud-idle .bottom-thumb-dock,
+.app-shell.hud-idle .tactical-coord-tag {
+  opacity: 0.62;
+}
+.app-shell.hud-dragging .top-hud-bar,
+.app-shell.hud-dragging .bottom-thumb-dock,
+.app-shell.hud-dragging .floating-compass-widget,
+.app-shell.hud-dragging .floating-3d-right-stack,
+.app-shell.hud-dragging .map-2d-floating-controls,
+.app-shell.hud-dragging .tactical-coord-tag {
+  opacity: 0.22;
+}
+
 /* ULTRA-COMPACT LANDSCAPE TOP MICRO-HUD */
 .top-hud-bar {
   position: absolute;
@@ -81,37 +103,52 @@ button:active {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 8px;
-  border-radius: 999px;
-  background: var(--glass-heavy);
-  backdrop-filter: blur(18px) saturate(175%);
-  border: 1px solid rgba(0, 245, 212, 0.22);
-  box-shadow: inset 0 1px 0 rgba(0, 245, 212, 0.14), 0 4px 16px rgba(0, 0, 0, 0.48);
-  font-size: 0.69rem;
+  gap: 5px;
+  height: 26px;
+  padding: 0 7px;
+  border-radius: 5px;
+  background: rgba(4, 9, 15, 0.86);
+  backdrop-filter: blur(18px) saturate(165%);
+  border: 1px solid rgba(0, 245, 212, 0.3);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 245, 212, 0.26),
+    0 4px 16px rgba(0, 0, 0, 0.6);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
+  font-size: 0.64rem;
+  letter-spacing: 0.02em;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
-/* SLIDING 360° TACTICAL COMPASS TAPE (24px micro strip, pointer-events: none) */
+.tactical-clock-chip {
+  font-weight: 800;
+  color: #e0f2fe;
+  letter-spacing: 0.05em;
+  padding: 1px 4px;
+  border-radius: 3px;
+  background: rgba(0, 245, 212, 0.1);
+  border: 1px solid rgba(0, 245, 212, 0.22);
+}
+
+/* SLIDING 360° TACTICAL COMPASS TAPE (22px micro strip, pointer-events: none) */
 .tactical-compass-tape {
   position: relative;
-  flex: 0 1 188px;
-  min-width: 100px;
-  max-width: 220px;
-  height: 24px;
-  border-radius: 999px;
-  background: rgba(7, 11, 18, 0.74);
+  flex: 0 1 178px;
+  min-width: 96px;
+  max-width: 210px;
+  height: 22px;
+  border-radius: 4px;
+  background: rgba(4, 9, 15, 0.84);
   backdrop-filter: blur(14px);
-  border: 1px solid rgba(0, 245, 212, 0.26);
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.42);
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.52);
   overflow: hidden;
   pointer-events: none;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
 .tactical-compass-tape.heading-up-on {
-  border-color: rgba(0, 245, 212, 0.68);
+  border-color: rgba(0, 245, 212, 0.72);
   box-shadow: 0 0 12px rgba(0, 245, 212, 0.28);
 }
 .tape-scale {
@@ -129,21 +166,21 @@ button:active {
 .tape-mark {
   width: 1px;
   height: 4px;
-  background: rgba(148, 163, 184, 0.5);
+  background: rgba(148, 163, 184, 0.45);
 }
 .tape-tick.major .tape-mark {
   height: 6px;
   width: 1.5px;
-  background: rgba(226, 232, 240, 0.85);
+  background: rgba(226, 232, 240, 0.88);
 }
 .tape-tick.north .tape-mark {
   background: #ff453a;
 }
 .tape-lbl {
-  font-size: 0.53rem;
+  font-size: 0.51rem;
   font-weight: 800;
   line-height: 1.1;
-  color: rgba(203, 213, 225, 0.88);
+  color: rgba(203, 213, 225, 0.86);
 }
 .tape-tick.north .tape-lbl {
   color: #ff453a;
@@ -167,7 +204,7 @@ button:active {
   background: var(--accent-cyan);
 }
 .tape-bug.target {
-  font-size: 0.62rem;
+  font-size: 0.6rem;
   color: var(--accent-gold);
   text-shadow: 0 0 6px rgba(255, 214, 10, 0.75);
 }
@@ -176,36 +213,49 @@ button:active {
   top: 0;
   left: 50%;
   transform: translateX(-50%);
+  z-index: 4;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 5px solid var(--accent-cyan);
+  border-top: 4px solid var(--accent-cyan);
+}
+.tape-center-mask {
+  position: absolute;
+  top: 1px;
+  bottom: 1px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 3;
+  padding: 0 7px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #050910;
+  box-shadow:
+    -6px 0 6px #050910,
+    6px 0 6px #050910;
 }
 .tape-center-deg {
-  position: absolute;
-  left: 50%;
-  bottom: 1px;
-  transform: translateX(-50%);
   display: inline-flex;
   align-items: center;
   gap: 2px;
-  padding: 0 5px;
-  border-radius: 999px;
-  background: rgba(7, 11, 18, 0.92);
-  border: 1px solid rgba(0, 245, 212, 0.4);
-  font-size: 0.59rem;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: rgba(0, 245, 212, 0.12);
+  border: 1px solid rgba(0, 245, 212, 0.5);
+  font-size: 0.58rem;
   font-weight: 800;
   color: #ecfeff;
   line-height: 1.25;
 }
 .tape-hup-tag {
-  font-size: 0.5rem;
+  font-size: 0.49rem;
   font-weight: 900;
   color: var(--accent-cyan);
 }
 
 .pulse-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
   background: var(--accent-cyan);
@@ -221,10 +271,10 @@ button:active {
 }
 
 .hud-version-pill {
-  font-size: 0.63rem;
+  font-size: 0.59rem;
   font-weight: 800;
-  padding: 2px 6px;
-  border-radius: 999px;
+  padding: 1px 5px;
+  border-radius: 3px;
   background: rgba(148, 163, 184, 0.14);
   border: 1px solid rgba(148, 163, 184, 0.28);
   color: #cbd5e1;
@@ -248,8 +298,8 @@ button:active {
 
 .tele-mini-sep {
   width: 1px;
-  height: 12px;
-  background: rgba(255, 255, 255, 0.16);
+  height: 11px;
+  background: rgba(0, 245, 212, 0.22);
   flex-shrink: 0;
 }
 
@@ -259,6 +309,12 @@ button:active {
   gap: 3px;
   color: #cbd5e1;
 }
+.tele-inline small {
+  font-size: 0.52rem;
+  font-weight: 700;
+  color: #64748b;
+  letter-spacing: 0.04em;
+}
 .tele-inline strong {
   color: var(--text-primary);
   font-weight: 700;
@@ -267,46 +323,46 @@ button:active {
 .tele-compass-chip {
   display: inline-flex;
   align-items: center;
-  gap: 3px;
-  padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(0, 245, 212, 0.12);
-  border: 1px solid rgba(0, 245, 212, 0.35);
+  gap: 2px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(0, 245, 212, 0.14);
+  border: 1px solid rgba(0, 245, 212, 0.42);
   color: var(--accent-cyan);
-  font-size: 0.68rem;
-  font-weight: 700;
+  font-size: 0.63rem;
+  font-weight: 800;
 }
 
 .view-mode-segmented {
   display: flex;
-  background: rgba(0, 0, 0, 0.42);
-  padding: 2px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(0, 0, 0, 0.5);
+  padding: 1px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
 .view-mode-segmented button {
   border: none;
   background: transparent;
-  padding: 2px 7px;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.63rem;
+  font-weight: 800;
   color: var(--text-secondary);
 }
 
 .view-mode-segmented button.active {
-  background: rgba(56, 189, 248, 0.28);
-  color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  background: rgba(0, 245, 212, 0.22);
+  color: var(--accent-cyan);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
 }
 
 .hud-icon-btn {
-  height: 24px;
-  padding: 0 7px;
-  border-radius: 999px;
-  font-size: 0.68rem;
-  font-weight: 700;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  font-size: 0.63rem;
+  font-weight: 800;
   display: inline-flex;
   align-items: center;
   gap: 3px;
@@ -603,35 +659,50 @@ button:active {
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
-  gap: 3px;
+  gap: 4px;
+  max-width: 175px;
   padding: 2px 6px;
-  border-radius: 999px;
-  background: rgba(9, 13, 22, 0.78);
-  border: 1px solid var(--badge-accent, rgba(255, 255, 255, 0.25));
-  font-size: 0.62rem;
+  border-radius: 4px;
+  background: rgba(4, 9, 15, 0.84);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-left: 2.5px solid var(--badge-accent, #00f5d4);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
+  font-size: 0.57rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
   white-space: nowrap;
-  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.45);
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.52);
   will-change: transform;
 }
+.badge-dot {
+  width: 5px;
+  height: 5px;
+  transform: rotate(45deg);
+  flex-shrink: 0;
+}
+.badge-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .badge-3d.is-user-pin {
-  background: rgba(24, 18, 8, 0.92);
-  border-width: 1.5px;
+  background: rgba(24, 18, 8, 0.94);
+  border-color: var(--badge-accent, #ff9f0a);
   padding: 2.5px 7px;
-  font-size: 0.65rem;
-  font-weight: 700;
+  font-size: 0.61rem;
+  font-weight: 800;
   z-index: 5;
 }
 .badge-3d.is-locked {
-  background: rgba(255, 214, 10, 0.26);
+  background: rgba(255, 214, 10, 0.24);
   border-color: #ffd60a;
   box-shadow: 0 0 14px rgba(255, 214, 10, 0.55);
   z-index: 8;
 }
 .badge-sub {
-  font-size: 0.58rem;
-  color: #cbd5e1;
-  opacity: 0.88;
+  font-size: 0.53rem;
+  color: #94a3b8;
   font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
 .floating-3d-right-stack {
@@ -649,14 +720,17 @@ button:active {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: var(--glass-heavy);
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(4, 9, 15, 0.86);
   backdrop-filter: blur(18px);
-  border: 1px solid var(--glass-border);
-  font-size: 0.68rem;
-  font-weight: 700;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.52);
 }
 .cam-north-3d-btn.active {
   background: rgba(0, 245, 212, 0.22);
@@ -666,13 +740,17 @@ button:active {
 }
 
 .floating-recenter-btn {
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: var(--glass-heavy);
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(4, 9, 15, 0.86);
   backdrop-filter: blur(18px);
-  font-size: 0.68rem;
-  font-weight: 700;
-  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.52);
 }
 
 .sat-loading-pill {
@@ -810,6 +888,35 @@ button:active {
   right: 0;
   border-width: 0 1.5px 1.5px 0;
 }
+.tactical-center-crosshair {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 16px;
+  height: 16px;
+  transform: translate(-50%, -50%);
+  opacity: 0.35;
+}
+.tactical-center-crosshair::before,
+.tactical-center-crosshair::after {
+  content: '';
+  position: absolute;
+  background: var(--accent-cyan);
+}
+.tactical-center-crosshair::before {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  transform: translateX(-50%);
+}
+.tactical-center-crosshair::after {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+  transform: translateY(-50%);
+}
 .map-2d-floating-controls {
   position: absolute;
   right: max(8px, env(safe-area-inset-right));
@@ -822,13 +929,18 @@ button:active {
 }
 .map-2d-floating-controls button,
 .gmaps-ext-btn {
-  padding: 5px 9px;
-  border-radius: 999px;
-  background: var(--glass-heavy);
+  display: inline-flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 5px;
+  background: rgba(4, 9, 15, 0.86);
   backdrop-filter: blur(16px);
-  border: 1px solid var(--glass-border);
-  font-size: 0.68rem;
-  font-weight: 700;
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
   color: #fff;
   text-decoration: none;
 }
@@ -987,7 +1099,7 @@ button:active {
   border-color: var(--accent-orange);
 }
 
-/* ULTRA-SLIM SINGLE-LINE BOTTOM THUMB DOCK */
+/* SPEC-OPS SINGLE-LINE BOTTOM COMMAND DOCK */
 .bottom-thumb-dock {
   position: absolute;
   bottom: max(6px, env(safe-area-inset-bottom));
@@ -996,17 +1108,30 @@ button:active {
   transform: translateX(-50%);
   width: max-content;
   max-width: calc(100vw - 16px);
+  height: 28px;
   margin: 0;
   z-index: 610;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 5px;
-  border-radius: 999px;
-  background: var(--glass-heavy);
-  backdrop-filter: blur(24px) saturate(180%);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.55);
+  padding: 0 5px;
+  border-radius: 5px;
+  background: rgba(4, 9, 15, 0.88);
+  backdrop-filter: blur(22px) saturate(170%);
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  box-shadow:
+    inset 0 1px 0 rgba(0, 245, 212, 0.24),
+    0 8px 24px rgba(0, 0, 0, 0.65);
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
+}
+
+.zen-tele-readout {
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: var(--accent-cyan);
+  padding: 0 6px;
+  letter-spacing: 0.04em;
+  font-variant-numeric: tabular-nums;
 }
 
 .dock-btn {
@@ -1014,25 +1139,27 @@ button:active {
   flex-direction: row;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
-  border-radius: 999px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 4px;
   border: 1px solid transparent;
-  background: transparent;
+  background: rgba(255, 255, 255, 0.04);
 }
 .dock-btn.rec-active .dock-lbl {
   color: var(--accent-cyan);
 }
 .dock-btn.gps-live {
   background: rgba(0, 245, 212, 0.14);
-  border-color: rgba(0, 245, 212, 0.35);
+  border-color: rgba(0, 245, 212, 0.42);
 }
 .dock-icon {
-  font-size: 0.88rem;
+  font-size: 0.84rem;
   line-height: 1;
 }
 .dock-lbl {
-  font-size: 0.67rem;
-  font-weight: 700;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
   color: #cbd5e1;
   white-space: nowrap;
 }
@@ -1043,21 +1170,22 @@ button:active {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  padding: 5px 11px;
-  border-radius: 999px;
+  height: 22px;
+  padding: 0 11px;
+  border-radius: 4px;
   background: linear-gradient(135deg, #ff9f0a, #ff375f);
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  box-shadow: 0 4px 16px rgba(255, 100, 30, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.42);
+  box-shadow: 0 3px 12px rgba(255, 100, 30, 0.45);
   color: #fff;
 }
 .pin-bolt {
-  font-size: 0.92rem;
+  font-size: 0.85rem;
   line-height: 1;
 }
 .pin-main-txt {
-  font-size: 0.69rem;
-  font-weight: 800;
-  letter-spacing: 0.03em;
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
   white-space: nowrap;
 }
 
@@ -1632,17 +1760,17 @@ select {
 .tactical-coord-tag {
   position: absolute;
   left: max(8px, env(safe-area-inset-left));
-  bottom: 66px;
+  bottom: 62px;
   z-index: 555;
   pointer-events: none;
   padding: 1px 6px;
-  border-radius: 999px;
-  background: rgba(7, 11, 18, 0.72);
-  border: 1px solid rgba(56, 189, 248, 0.28);
+  border-radius: 3px;
+  background: rgba(4, 9, 15, 0.82);
+  border: 1px solid rgba(0, 245, 212, 0.28);
   color: rgba(186, 230, 253, 0.86);
-  font-size: 0.55rem;
+  font-size: 0.54rem;
   font-weight: 700;
-  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
@@ -1655,12 +1783,13 @@ select {
   flex-direction: column;
   align-items: center;
   gap: 1px;
-  padding: 4px 5px;
-  border-radius: 14px;
-  background: rgba(10, 15, 24, 0.86);
+  padding: 3px 4px;
+  border-radius: 6px;
+  background: rgba(4, 9, 15, 0.86);
   backdrop-filter: blur(22px) saturate(180%);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(0, 245, 212, 0.28);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.58);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
 .floating-compass-widget.mag-warn {
@@ -1669,8 +1798,8 @@ select {
 }
 .fcw-dial-shell {
   position: relative;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -2222,7 +2351,7 @@ select {
 }
 .app-shell.synthetic-landscape .tactical-coord-tag {
   left: max(8px, env(safe-area-inset-top));
-  bottom: 66px;
+  bottom: 62px;
 }
 .app-shell.synthetic-landscape .tactical-compass-tape {
   display: block;
