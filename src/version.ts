@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.1.0',
-  buildNumber: 202611161538,
-  builtAt: '2026-11-16T15:38:12+07:00',
-  note: "Hiệu chuẩn độ chính xác 3D Three.js (0mm lệch mặt lưới, 0% lún trail, đồng bộ WGS84)"
+  version: '1.1.1',
+  buildNumber: 202611161609,
+  builtAt: '2026-11-16T16:09:17+07:00',
+  note: "Thêm vòng tròn vuốt chiến thuật khi nhấn giữ & Dẫn đường bám trail kiểu GTA V"
 };

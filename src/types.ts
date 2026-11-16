@@ -125,6 +125,20 @@ export interface SafetyAlert {
   distanceM: number;
 }
 
+export interface TacticalRouteResult {
+  id: string;
+  destName: string;
+  destLat: number;
+  destLon: number;
+  destEle: number;
+  points: [number, number][];
+  totalDistanceM: number;
+  ascentM: number;
+  descentM: number;
+  etaMinutes: number;
+  snappedToTrail: boolean;
+}
+
 export type ViewMode = '3d' | 'split' | '2d';
 export type Terrain3DSkin = 'tactical' | 'topo' | 'satellite' | 'night';
 export type Camera3DMode = 'orbit' | 'chase';

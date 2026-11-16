@@ -1,4 +1,12 @@
-import type { DemGrid, GeoBounds, NuiDinhDataset, SafetyAlert, TrackPoint, UserPin } from '../types';
+import type {
+  DemGrid,
+  GeoBounds,
+  NuiDinhDataset,
+  SafetyAlert,
+  TacticalRouteResult,
+  TrackPoint,
+  UserPin
+} from '../types';
 
 const DEG_TO_RAD = Math.PI / 180;
 const RAD_TO_DEG = 180 / Math.PI;
@@ -870,4 +878,384 @@ export function intersectTwoCircles(
   };
 
   return { status: 'ok', p1, p2, approx: p1, baselineM: d };
+}
+
+// ============================================================================
+// GTA V-STYLE TRAIL-NETWORK TACTICAL ROUTING ENGINE (OFFLINE A* ON 281 TRAILS)
+// ============================================================================
+
+interface TrailGraphEdge {
+  to: number;
+  w: number;
+}
+
+interface TrailGraph {
+  pts: [number, number][];
+  adj: TrailGraphEdge[][];
+}
+
+const trailGraphCache = new WeakMap<NuiDinhDataset, TrailGraph>();
+
+function getOrBuildTrailGraph(dataset: NuiDinhDataset): TrailGraph {
+  const cached = trailGraphCache.get(dataset);
+  if (cached) return cached;
+
+  const pts: [number, number][] = [];
+  const adj: TrailGraphEdge[][] = [];
+  const trailOf: number[] = [];
+  const grid = new Map<string, number[]>();
+  const BUCKET_M = 60;
+  const bucketKey = (lat: number, lon: number) =>
+    `${Math.floor((lat * METERS_PER_DEG_LAT) / BUCKET_M)},${Math.floor((lon * METERS_PER_DEG_LON) / BUCKET_M)}`;
+
+  const distFastM = (a: [number, number], b: [number, number]) =>
+    Math.hypot((a[0] - b[0]) * METERS_PER_DEG_LAT, (a[1] - b[1]) * METERS_PER_DEG_LON);
+
+  dataset.trails.forEach((trail, trailIdx) => {
+    const isMainRoute = trail.routes && trail.routes.length > 0;
+    const costFactor = isMainRoute ? 0.85 : 1.0;
+    const ids: number[] = [];
+
+    for (const [lat, lon] of trail.coords) {
+      const id = pts.length;
+      pts.push([lat, lon]);
+      adj.push([]);
+      trailOf.push(trailIdx);
+      ids.push(id);
+
+      const k = bucketKey(lat, lon);
+      let bucket = grid.get(k);
+      if (!bucket) {
+        bucket = [];
+        grid.set(k, bucket);
+      }
+      bucket.push(id);
+    }
+
+    for (let i = 0; i < ids.length - 1; i++) {
+      const u = ids[i];
+      const v = ids[i + 1];
+      const w = Math.max(0.2, distFastM(pts[u], pts[v]) * costFactor);
+      adj[u].push({ to: v, w });
+      adj[v].push({ to: u, w });
+    }
+  });
+
+  // Connect nearby trail intersections across different trail polylines (< 45m)
+  for (let u = 0; u < pts.length; u++) {
+    const [lat, lon] = pts[u];
+    const gx = Math.floor((lat * METERS_PER_DEG_LAT) / BUCKET_M);
+    const gy = Math.floor((lon * METERS_PER_DEG_LON) / BUCKET_M);
+
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        const bucket = grid.get(`${gx + dx},${gy + dy}`);
+        if (!bucket) continue;
+        for (const v of bucket) {
+          if (v <= u || trailOf[u] === trailOf[v]) continue;
+          const dM = distFastM(pts[u], pts[v]);
+          if (dM <= 45) {
+            const w = dM < 3 ? Math.max(0.2, dM) : dM * 1.55;
+            adj[u].push({ to: v, w });
+            adj[v].push({ to: u, w });
+          }
+        }
+      }
+    }
+  }
+
+  const graph: TrailGraph = { pts, adj };
+  trailGraphCache.set(dataset, graph);
+  return graph;
+}
+
+function findNearestTrailNode(graph: TrailGraph, lat: number, lon: number): { idx: number; distM: number } {
+  let bestIdx = -1;
+  let bestSq = Infinity;
+  const { pts } = graph;
+  for (let i = 0; i < pts.length; i++) {
+    const dy = (pts[i][0] - lat) * METERS_PER_DEG_LAT;
+    const dx = (pts[i][1] - lon) * METERS_PER_DEG_LON;
+    const sq = dx * dx + dy * dy;
+    if (sq < bestSq) {
+      bestSq = sq;
+      bestIdx = i;
+    }
+  }
+  return { idx: bestIdx, distM: Math.sqrt(bestSq) };
+}
+
+function aStarTrailPath(graph: TrailGraph, startIdx: number, goalIdx: number): number[] | null {
+  const n = graph.pts.length;
+  if (startIdx < 0 || goalIdx < 0 || startIdx >= n || goalIdx >= n) return null;
+  if (startIdx === goalIdx) return [startIdx];
+
+  const { pts, adj } = graph;
+  const [goalLat, goalLon] = pts[goalIdx];
+
+  const gScore = new Float64Array(n);
+  gScore.fill(Infinity);
+  const parent = new Int32Array(n);
+  parent.fill(-1);
+  const closed = new Uint8Array(n);
+
+  const heuristicM = (idx: number) =>
+    Math.hypot((pts[idx][0] - goalLat) * METERS_PER_DEG_LAT, (pts[idx][1] - goalLon) * METERS_PER_DEG_LON) * 0.85;
+
+  // Compact parallel-array binary min-heap
+  const heapNodes: number[] = [startIdx];
+  const heapF: number[] = [heuristicM(startIdx)];
+  gScore[startIdx] = 0;
+
+  const pushHeap = (node: number, f: number) => {
+    let i = heapNodes.length;
+    heapNodes.push(node);
+    heapF.push(f);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (heapF[p] <= f) break;
+      heapNodes[i] = heapNodes[p];
+      heapF[i] = heapF[p];
+      i = p;
+    }
+    heapNodes[i] = node;
+    heapF[i] = f;
+  };
+
+  const popHeap = (): number => {
+    const top = heapNodes[0];
+    const lastNode = heapNodes.pop()!;
+    const lastF = heapF.pop()!;
+    const len = heapNodes.length;
+    if (len > 0) {
+      let i = 0;
+      while (true) {
+        const l = (i << 1) + 1;
+        const r = l + 1;
+        if (l >= len) break;
+        const smallest = r < len && heapF[r] < heapF[l] ? r : l;
+        if (lastF <= heapF[smallest]) break;
+        heapNodes[i] = heapNodes[smallest];
+        heapF[i] = heapF[smallest];
+        i = smallest;
+      }
+      heapNodes[i] = lastNode;
+      heapF[i] = lastF;
+    }
+    return top;
+  };
+
+  while (heapNodes.length > 0) {
+    const u = popHeap();
+    if (closed[u]) continue;
+    if (u === goalIdx) {
+      const chain: number[] = [];
+      for (let cur = goalIdx; cur !== -1; cur = parent[cur]) {
+        chain.push(cur);
+      }
+      chain.reverse();
+      return chain;
+    }
+    closed[u] = 1;
+
+    const edges = adj[u];
+    const baseG = gScore[u];
+    for (let i = 0; i < edges.length; i++) {
+      const { to: v, w } = edges[i];
+      if (closed[v]) continue;
+      const candG = baseG + w;
+      if (candG < gScore[v]) {
+        gScore[v] = candG;
+        parent[v] = u;
+        pushHeap(v, candG + heuristicM(v));
+      }
+    }
+  }
+
+  return null;
+}
+
+function summarizeRouteMetrics(
+  points: [number, number][],
+  dataset: NuiDinhDataset
+): { totalDistanceM: number; ascentM: number; descentM: number; etaMinutes: number } {
+  if (points.length < 2) {
+    return { totalDistanceM: 0, ascentM: 0, descentM: 0, etaMinutes: 0 };
+  }
+  let totalDistanceM = 0;
+  let ascentM = 0;
+  let descentM = 0;
+  let prevEle = sampleDemElevation(dataset.dem, dataset.bounds, points[0][0], points[0][1]);
+
+  for (let i = 1; i < points.length; i++) {
+    totalDistanceM += haversineDistanceM(points[i - 1][0], points[i - 1][1], points[i][0], points[i][1]);
+    const ele = sampleDemElevation(dataset.dem, dataset.bounds, points[i][0], points[i][1]);
+    const diff = ele - prevEle;
+    if (diff > 0) ascentM += diff;
+    else descentM += -diff;
+    prevEle = ele;
+  }
+
+  // Naismith mountain pacing: ~3.6 km/h horizontal + climb effort
+  const rawMinutes = totalDistanceM / 60 + ascentM / 10;
+  const etaMinutes = totalDistanceM > 15 ? Math.max(1, Math.round(rawMinutes)) : 0;
+
+  return {
+    totalDistanceM: Math.round(totalDistanceM),
+    ascentM: Math.round(ascentM),
+    descentM: Math.round(descentM),
+    etaMinutes
+  };
+}
+
+function dedupeAndSmoothRoutePoints(rawPts: [number, number][]): [number, number][] {
+  const deduped: [number, number][] = [];
+  for (const pt of rawPts) {
+    if (deduped.length === 0) {
+      deduped.push(pt);
+      continue;
+    }
+    const prev = deduped[deduped.length - 1];
+    const dM = Math.hypot((pt[0] - prev[0]) * METERS_PER_DEG_LAT, (pt[1] - prev[1]) * METERS_PER_DEG_LON);
+    if (dM >= 1.5) {
+      deduped.push(pt);
+    }
+  }
+  if (rawPts.length >= 2) {
+    const lastRaw = rawPts[rawPts.length - 1];
+    const lastOut = deduped[deduped.length - 1];
+    if (lastOut[0] !== lastRaw[0] || lastOut[1] !== lastRaw[1]) {
+      deduped[deduped.length - 1] = lastRaw;
+    }
+  }
+  if (deduped.length < 2) return deduped;
+  return subdivideLatLonRun(deduped, 18);
+}
+
+/**
+ * GTA V-Style Tactical Trail-Network Routing Engine (A* over 281 forest trails & 4 main routes)
+ */
+export function computeTacticalTrailRoute(
+  dataset: NuiDinhDataset,
+  startLat: number,
+  startLon: number,
+  destLat: number,
+  destLon: number,
+  destName?: string
+): TacticalRouteResult {
+  const destEle = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, destLat, destLon));
+  const resolvedName = destName || `Mục tiêu (${destEle}m)`;
+  const directDistM = haversineDistanceM(startLat, startLon, destLat, destLon);
+
+  const graph = getOrBuildTrailGraph(dataset);
+  const sHit = findNearestTrailNode(graph, startLat, startLon);
+  const eHit = findNearestTrailNode(graph, destLat, destLon);
+
+  let rawPts: [number, number][] = [
+    [startLat, startLon],
+    [destLat, destLon]
+  ];
+  let snappedToTrail = false;
+
+  if (
+    directDistM >= 60 &&
+    sHit.idx >= 0 &&
+    eHit.idx >= 0 &&
+    sHit.distM <= 450 &&
+    eHit.distM <= 450 &&
+    sHit.distM + eHit.distM < directDistM * 0.9
+  ) {
+    const nodeChain = aStarTrailPath(graph, sHit.idx, eHit.idx);
+    if (nodeChain && nodeChain.length >= 2) {
+      rawPts = [[startLat, startLon], ...nodeChain.map((id) => graph.pts[id]), [destLat, destLon]];
+      snappedToTrail = true;
+    }
+  }
+
+  const points = dedupeAndSmoothRoutePoints(rawPts);
+  const metrics = summarizeRouteMetrics(points, dataset);
+
+  return {
+    id: `gta-route-${Date.now()}`,
+    destName: resolvedName,
+    destLat: Number(destLat.toFixed(6)),
+    destLon: Number(destLon.toFixed(6)),
+    destEle,
+    points,
+    ...metrics,
+    snappedToTrail
+  };
+}
+
+/**
+ * Progressively trims completed GTA V tactical route behind the player, or reroutes if off-course > 85m.
+ */
+export function trimRouteFromPlayer(
+  route: TacticalRouteResult,
+  playerLat: number,
+  playerLon: number,
+  dataset: NuiDinhDataset
+): TacticalRouteResult {
+  if (route.points.length < 2) return route;
+
+  let bestSegIdx = 0;
+  let bestT = 0;
+  let bestProjLat = route.points[0][0];
+  let bestProjLon = route.points[0][1];
+  let bestDistM = Infinity;
+
+  for (let i = 0; i < route.points.length - 1; i++) {
+    const [lat1, lon1] = route.points[i];
+    const [lat2, lon2] = route.points[i + 1];
+    const ax = (lon1 - playerLon) * METERS_PER_DEG_LON;
+    const ay = (lat1 - playerLat) * METERS_PER_DEG_LAT;
+    const bx = (lon2 - playerLon) * METERS_PER_DEG_LON;
+    const by = (lat2 - playerLat) * METERS_PER_DEG_LAT;
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    let t = lenSq > 0 ? -(ax * dx + ay * dy) / lenSq : 0;
+    t = Math.max(0, Math.min(1, t));
+    const px = ax + t * dx;
+    const py = ay + t * dy;
+    const dM = Math.hypot(px, py);
+    if (dM < bestDistM) {
+      bestDistM = dM;
+      bestSegIdx = i;
+      bestT = t;
+      bestProjLat = lat1 + (lat2 - lat1) * t;
+      bestProjLon = lon1 + (lon2 - lon1) * t;
+    }
+  }
+
+  if (bestDistM > 85) {
+    const rerouted = computeTacticalTrailRoute(
+      dataset,
+      playerLat,
+      playerLon,
+      route.destLat,
+      route.destLon,
+      route.destName
+    );
+    return { ...rerouted, id: route.id };
+  }
+
+  const remaining: [number, number][] = [[playerLat, playerLon]];
+  if (bestDistM > 3 && bestT < 0.96) {
+    remaining.push([bestProjLat, bestProjLon]);
+  }
+  for (let i = bestSegIdx + 1; i < route.points.length; i++) {
+    remaining.push(route.points[i]);
+  }
+  if (remaining.length < 2) {
+    remaining.push([route.destLat, route.destLon]);
+  }
+
+  const points = dedupeAndSmoothRoutePoints(remaining);
+  const metrics = summarizeRouteMetrics(points, dataset);
+  return {
+    ...route,
+    points,
+    ...metrics
+  };
 }

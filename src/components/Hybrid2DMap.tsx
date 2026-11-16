@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import type {
@@ -7,6 +7,7 @@ import type {
   NuiDinhDataset,
   PinCategory,
   TacticalPalette,
+  TacticalRouteResult,
   TacticalTarget,
   TrackPoint,
   UserPin
@@ -15,6 +16,12 @@ import { fetchTileWithCache, getCachedTileBlob } from '../utils/offlineVault';
 import { projectPointByBearing, sampleDemElevation } from '../utils/geoMath';
 import { useContinuousAngle } from './CompassSystem';
 import { getMapOverlayPalette, resolveRouteColor } from './Terrain3DView';
+import {
+  RadialActionId,
+  RadialSpotState,
+  resolveRadialSector,
+  TacticalRadialWheel
+} from './TacticalRadialWheel';
 
 interface Hybrid2DMapProps {
   dataset: NuiDinhDataset;
@@ -32,6 +39,7 @@ interface Hybrid2DMapProps {
   importedGpx: ImportedGpxTrack[];
   lockedTarget: TacticalTarget | null;
   lockedBearing: number | null;
+  activeRoute: TacticalRouteResult | null;
   isSimMode: boolean;
   syntheticLandscape?: boolean;
   headingUp: boolean;
@@ -44,6 +52,7 @@ interface Hybrid2DMapProps {
   onSelectUserPin: (pin: UserPin) => void;
   onRequestPinAt: (lat: number, lon: number, ele: number) => void;
   onSimMoveTo: (lat: number, lon: number) => void;
+  onStartGtaRoute: (lat: number, lon: number, ele: number) => void;
 }
 
 const PIN_EMOJI: Record<PinCategory, string> = {
@@ -168,6 +177,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   importedGpx,
   lockedTarget,
   lockedBearing,
+  activeRoute,
   isSimMode,
   syntheticLandscape = false,
   headingUp,
@@ -179,12 +189,16 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   onSelectTarget,
   onSelectUserPin,
   onRequestPinAt,
-  onSimMoveTo
+  onSimMoveTo,
+  onStartGtaRoute
 }) => {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const divRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
   const [rotSize, setRotSize] = React.useState<number>(640);
+  const [radialSpot, setRadialSpot] = useState<RadialSpotState | null>(null);
+  const radialSpotRef = useRef<RadialSpotState | null>(null);
+  radialSpotRef.current = radialSpot;
   const syntheticLandscapeRef = useRef<boolean>(syntheticLandscape);
   syntheticLandscapeRef.current = syntheticLandscape;
   const headingUpRef = useRef<boolean>(headingUp);
@@ -199,21 +213,189 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   const trackLineRef = useRef<L.Polyline | null>(null);
   const targetLineRef = useRef<L.Polyline | null>(null);
   const sightingLineRef = useRef<L.Polyline | null>(null);
+  const gtaCasingLineRef = useRef<L.Polyline | null>(null);
+  const gtaCoreLineRef = useRef<L.Polyline | null>(null);
+  const gtaFlowLineRef = useRef<L.Polyline | null>(null);
+  const gtaDestMarkerRef = useRef<L.Marker | null>(null);
   const headingRayRef = useRef<L.Polyline | null>(null);
   const rangeRingRef = useRef<L.Circle | null>(null);
   const playerMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
 
-  const callbacksRef = useRef({ onRequestPinAt, onSimMoveTo, isSimMode, onMapInteractionChange });
-  callbacksRef.current = { onRequestPinAt, onSimMoveTo, isSimMode, onMapInteractionChange };
+  const callbacksRef = useRef({
+    onRequestPinAt,
+    onSimMoveTo,
+    onSelectTarget,
+    onStartGtaRoute,
+    isSimMode,
+    onMapInteractionChange
+  });
+  callbacksRef.current = {
+    onRequestPinAt,
+    onSimMoveTo,
+    onSelectTarget,
+    onStartGtaRoute,
+    isSimMode,
+    onMapInteractionChange
+  };
+
+  const executeRadialAction2D = useCallback((action: RadialActionId, spot: RadialSpotState) => {
+    const cb = callbacksRef.current;
+    if (navigator.vibrate) navigator.vibrate(24);
+    if (action === 'navigate-gta') {
+      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele);
+    } else if (action === 'pin-here') {
+      cb.onRequestPinAt(spot.lat, spot.lon, spot.ele);
+    } else if (action === 'fly-move') {
+      if (cb.isSimMode) {
+        cb.onSimMoveTo(spot.lat, spot.lon);
+      } else {
+        mapRef.current?.flyTo([spot.lat, spot.lon], 17, { duration: 0.45 });
+      }
+    } else if (action === 'lock-radar') {
+      cb.onSelectTarget({
+        id: `spot2d-${Date.now()}`,
+        name: `Điểm 2D (${spot.ele}m)`,
+        lat: spot.lat,
+        lon: spot.lon,
+        ele: spot.ele,
+        category: 'checkpoint'
+      });
+    }
+    setRadialSpot(null);
+    radialSpotRef.current = null;
+  }, []);
 
   // 1. Initialize Leaflet Map
   useEffect(() => {
     if (!divRef.current || !wrapperRef.current) return;
     const hostEl = divRef.current;
-    const onHostPointerDown = () => callbacksRef.current.onMapInteractionChange?.(true);
-    const onHostPointerUp = () => callbacksRef.current.onMapInteractionChange?.(false);
+    const activePointerIds = new Set<number>();
+    const pointerDownPos = { x: 0, y: 0 };
+    let longPressTimer: number | null = null;
+    let dragDisabledByRadial = false;
+
+    const clientToWrapperLocal = (clientX: number, clientY: number) => {
+      const wrapper = wrapperRef.current!;
+      const wRect = wrapper.getBoundingClientRect();
+      const viewW = wrapper.clientWidth || wRect.width;
+      const viewH = wrapper.clientHeight || wRect.height;
+      const localX = syntheticLandscapeRef.current ? clientY - wRect.top : clientX - wRect.left;
+      const localY = syntheticLandscapeRef.current ? wRect.right - clientX : clientY - wRect.top;
+      return { localX, localY, viewW, viewH };
+    };
+
+    const openRadialAt2D = (clientX: number, clientY: number, pointerActive: boolean, explicitLatLng?: L.LatLng) => {
+      const ll = explicitLatLng || map.mouseEventToLatLng({ clientX, clientY } as MouseEvent);
+      if (!ll) return;
+      const { localX, localY, viewW, viewH } = clientToWrapperLocal(clientX, clientY);
+      const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, ll.lat, ll.lng));
+      if (navigator.vibrate) navigator.vibrate(22);
+
+      if (pointerActive && map.dragging.enabled()) {
+        map.dragging.disable();
+        dragDisabledByRadial = true;
+      }
+
+      const padX = Math.min(132, Math.max(96, viewW * 0.25));
+      const padY = Math.min(136, Math.max(100, viewH * 0.34));
+      const nextSpot: RadialSpotState = {
+        lat: Number(ll.lat.toFixed(6)),
+        lon: Number(ll.lng.toFixed(6)),
+        ele,
+        slope: 0,
+        screenX: Math.min(viewW - padX, Math.max(padX, localX)),
+        screenY: Math.min(viewH - padY, Math.max(padY, localY)),
+        originX: localX,
+        originY: localY,
+        dragX: 0,
+        dragY: 0,
+        activeSector: null,
+        pointerActive
+      };
+      radialSpotRef.current = nextSpot;
+      setRadialSpot(nextSpot);
+    };
+
+    const onHostPointerDown = (e: PointerEvent) => {
+      callbacksRef.current.onMapInteractionChange?.(true);
+      activePointerIds.add(e.pointerId);
+      if (activePointerIds.size > 1) {
+        if (longPressTimer) {
+          window.clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        return;
+      }
+      pointerDownPos.x = e.clientX;
+      pointerDownPos.y = e.clientY;
+      if (longPressTimer) window.clearTimeout(longPressTimer);
+      longPressTimer = window.setTimeout(() => {
+        longPressTimer = null;
+        openRadialAt2D(e.clientX, e.clientY, true);
+      }, 440);
+    };
+
+    const onHostPointerMove = (e: PointerEvent) => {
+      const activeSpot = radialSpotRef.current;
+      if (activeSpot && activeSpot.pointerActive) {
+        const { localX, localY } = clientToWrapperLocal(e.clientX, e.clientY);
+        const dragX = localX - activeSpot.originX;
+        const dragY = localY - activeSpot.originY;
+        const nextSector = resolveRadialSector(dragX, dragY, 24);
+        if (nextSector && nextSector !== activeSpot.activeSector && navigator.vibrate) {
+          navigator.vibrate(10);
+        }
+        const updated: RadialSpotState = {
+          ...activeSpot,
+          dragX,
+          dragY,
+          activeSector: nextSector
+        };
+        radialSpotRef.current = updated;
+        setRadialSpot(updated);
+        return;
+      }
+      if (longPressTimer) {
+        const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
+        if (dist > 10) {
+          window.clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+      }
+    };
+
+    const onHostPointerUp = (e: PointerEvent) => {
+      activePointerIds.delete(e.pointerId);
+      callbacksRef.current.onMapInteractionChange?.(false);
+      if (longPressTimer) {
+        window.clearTimeout(longPressTimer);
+        longPressTimer = null;
+      }
+      if (dragDisabledByRadial) {
+        map.dragging.enable();
+        dragDisabledByRadial = false;
+      }
+      const activeSpot = radialSpotRef.current;
+      if (activeSpot && activeSpot.pointerActive) {
+        if (activeSpot.activeSector) {
+          executeRadialAction2D(activeSpot.activeSector, activeSpot);
+        } else {
+          const pinned: RadialSpotState = {
+            ...activeSpot,
+            dragX: 0,
+            dragY: 0,
+            activeSector: null,
+            pointerActive: false
+          };
+          radialSpotRef.current = pinned;
+          setRadialSpot(pinned);
+        }
+      }
+    };
+
     hostEl.addEventListener('pointerdown', onHostPointerDown);
+    window.addEventListener('pointermove', onHostPointerMove);
     window.addEventListener('pointerup', onHostPointerUp);
     window.addEventListener('pointercancel', onHostPointerUp);
     const map = L.map(divRef.current, {
@@ -354,33 +536,50 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       zIndexOffset: 1000
     }).addTo(map);
 
-    // Context menu / Long-press on 2D map to drop pin or teleport simulator
-    map.on('contextmenu', (e: L.LeafletMouseEvent) => {
-      const { lat, lng } = e.latlng;
-      const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, lat, lng));
-      const popupDiv = document.createElement('div');
-      popupDiv.className = 'map2d-quick-popup';
-      popupDiv.innerHTML = `
-        <div class="qp-title">⛰️ Độ cao ~${ele}m</div>
-        <div class="qp-sub">${lat.toFixed(5)}, ${lng.toFixed(5)}</div>
-        <div class="qp-btns">
-          <button data-act="pin">🪨 Ghim</button>
-          ${callbacksRef.current.isSimMode ? '<button data-act="walk">🏃 Đi tới</button>' : ''}
-        </div>
-      `;
-      const popup = L.popup({ closeButton: false })
-        .setLatLng(e.latlng)
-        .setContent(popupDiv)
-        .openOn(map);
+    const gtaCasingLine = L.polyline([], {
+      color: '#070B12',
+      weight: 10,
+      opacity: 0.85,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false
+    }).addTo(map);
 
-      popupDiv.querySelector('[data-act="pin"]')?.addEventListener('click', () => {
-        callbacksRef.current.onRequestPinAt(Number(lat.toFixed(6)), Number(lng.toFixed(6)), ele);
-        map.closePopup(popup);
-      });
-      popupDiv.querySelector('[data-act="walk"]')?.addEventListener('click', () => {
-        callbacksRef.current.onSimMoveTo(Number(lat.toFixed(6)), Number(lng.toFixed(6)));
-        map.closePopup(popup);
-      });
+    const gtaCoreLine = L.polyline([], {
+      color: '#7BA6CE',
+      weight: 5.5,
+      opacity: 0.96,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false
+    }).addTo(map);
+
+    const gtaFlowLine = L.polyline([], {
+      color: '#CFE2F3',
+      weight: 2.6,
+      dashArray: '10, 14',
+      opacity: 0.94,
+      className: 'gta-tactical-route-flow',
+      interactive: false
+    }).addTo(map);
+
+    const gtaDestMarker = L.marker([playerLat, playerLon], {
+      icon: L.divIcon({
+        className: 'gta-dest-2d-icon',
+        html: '',
+        iconSize: [28, 28],
+        iconAnchor: [14, 14]
+      }),
+      interactive: false,
+      zIndexOffset: 900
+    });
+
+    // Context menu fallback (desktop right-click -> open radial wheel pinned)
+    map.on('contextmenu', (e: L.LeafletMouseEvent) => {
+      e.originalEvent?.preventDefault();
+      if (!radialSpotRef.current) {
+        openRadialAt2D(e.originalEvent.clientX, e.originalEvent.clientY, false, e.latlng);
+      }
     });
 
     mapRef.current = map;
@@ -389,6 +588,10 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     trackLineRef.current = trackLine;
     targetLineRef.current = targetLine;
     sightingLineRef.current = sightingLine;
+    gtaCasingLineRef.current = gtaCasingLine;
+    gtaCoreLineRef.current = gtaCoreLine;
+    gtaFlowLineRef.current = gtaFlowLine;
+    gtaDestMarkerRef.current = gtaDestMarker;
     headingRayRef.current = headingRay;
     rangeRingRef.current = rangeRing;
     playerMarkerRef.current = playerMarker;
@@ -412,8 +615,10 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
 
     return () => {
       hostEl.removeEventListener('pointerdown', onHostPointerDown);
+      window.removeEventListener('pointermove', onHostPointerMove);
       window.removeEventListener('pointerup', onHostPointerUp);
       window.removeEventListener('pointercancel', onHostPointerUp);
+      if (longPressTimer) window.clearTimeout(longPressTimer);
       roWrap.disconnect();
       ro.disconnect();
       map.remove();
@@ -632,13 +837,45 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       trackLineRef.current.setLatLngs(trackPoints.map((t) => [t.lat, t.lon] as [number, number]));
     }
     if (targetLineRef.current) {
-      if (lockedTarget) {
+      if (lockedTarget && !activeRoute) {
         targetLineRef.current.setLatLngs([
           [playerLat, playerLon],
           [lockedTarget.lat, lockedTarget.lon]
         ]);
       } else {
         targetLineRef.current.setLatLngs([]);
+      }
+    }
+    if (gtaCasingLineRef.current && gtaCoreLineRef.current && gtaFlowLineRef.current && mapRef.current) {
+      if (activeRoute && activeRoute.points.length >= 2) {
+        gtaCasingLineRef.current.setLatLngs(activeRoute.points);
+        gtaCasingLineRef.current.setStyle({ color: ov.gtaCasingHex });
+        gtaCoreLineRef.current.setLatLngs(activeRoute.points);
+        gtaCoreLineRef.current.setStyle({ color: ov.gtaCoreHex });
+        gtaFlowLineRef.current.setLatLngs(activeRoute.points);
+        gtaFlowLineRef.current.setStyle({ color: ov.gtaHiHex });
+
+        if (gtaDestMarkerRef.current) {
+          gtaDestMarkerRef.current.setLatLng([activeRoute.destLat, activeRoute.destLon]);
+          gtaDestMarkerRef.current.setIcon(
+            L.divIcon({
+              className: 'gta-dest-2d-icon',
+              iconSize: [28, 28],
+              iconAnchor: [14, 14],
+              html: `<div class="gta-dest-pulse" style="--gta-accent:${ov.gtaCoreHex};--gta-hi:${ov.gtaHiHex}"><span></span></div>`
+            })
+          );
+          if (!mapRef.current.hasLayer(gtaDestMarkerRef.current)) {
+            gtaDestMarkerRef.current.addTo(mapRef.current);
+          }
+        }
+      } else {
+        gtaCasingLineRef.current.setLatLngs([]);
+        gtaCoreLineRef.current.setLatLngs([]);
+        gtaFlowLineRef.current.setLatLngs([]);
+        if (gtaDestMarkerRef.current && mapRef.current.hasLayer(gtaDestMarkerRef.current)) {
+          mapRef.current.removeLayer(gtaDestMarkerRef.current);
+        }
       }
     }
     if (sightingLineRef.current) {
@@ -655,7 +892,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     if (headingUpRef.current && follow2DRef.current) {
       mapRef.current?.panTo([playerLat, playerLon], { animate: false });
     }
-  }, [playerLat, playerLon, playerAccuracy, compassHeading, gpsCourse, trackPoints, lockedTarget, lockedBearing, palette]);
+  }, [playerLat, playerLon, playerAccuracy, compassHeading, gpsCourse, trackPoints, lockedTarget, lockedBearing, activeRoute, palette]);
 
   // 6. FlyTo Sync
   useEffect(() => {
@@ -733,6 +970,20 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           GMAPS
         </a>
       </div>
+      {radialSpot && (
+        <TacticalRadialWheel
+          spot={radialSpot}
+          playerLat={playerLat}
+          playerLon={playerLon}
+          isSimMode={isSimMode}
+          palette={palette}
+          onSelectAction={(act) => executeRadialAction2D(act, radialSpot)}
+          onClose={() => {
+            setRadialSpot(null);
+            radialSpotRef.current = null;
+          }}
+        />
+      )}
     </div>
   );
 };

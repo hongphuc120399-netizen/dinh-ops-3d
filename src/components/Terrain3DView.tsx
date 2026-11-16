@@ -8,6 +8,7 @@ import type {
   PinCategory,
   PoiItem,
   TacticalPalette,
+  TacticalRouteResult,
   TacticalTarget,
   Terrain3DSkin,
   TrackPoint,
@@ -16,7 +17,6 @@ import type {
 import {
   clipAndSubdividePolygonToBounds,
   clipAndSubdividePolylineToBounds,
-  computeBearingDeg,
   formatDistance,
   getWorldDimensions,
   haversineDistanceM,
@@ -27,6 +27,12 @@ import {
   world3DToLatLon
 } from '../utils/geoMath';
 import { fetchTileWithCache } from '../utils/offlineVault';
+import {
+  RadialActionId,
+  RadialSpotState,
+  resolveRadialSector,
+  TacticalRadialWheel
+} from './TacticalRadialWheel';
 
 interface Terrain3DViewProps {
   dataset: NuiDinhDataset;
@@ -49,6 +55,7 @@ interface Terrain3DViewProps {
   importedGpx: ImportedGpxTrack[];
   lockedTarget: TacticalTarget | null;
   lockedBearing: number | null;
+  activeRoute: TacticalRouteResult | null;
   isSimMode: boolean;
   syntheticLandscape?: boolean;
   headingUp: boolean;
@@ -60,6 +67,7 @@ interface Terrain3DViewProps {
   onSelectUserPin: (pin: UserPin) => void;
   onRequestPinAt: (lat: number, lon: number, ele: number) => void;
   onSimMoveTo: (lat: number, lon: number) => void;
+  onStartGtaRoute: (lat: number, lon: number, ele: number) => void;
 }
 
 interface ProjectedBadge {
@@ -178,7 +186,13 @@ export function getMapOverlayPalette(palette: TacticalPalette = 'slate') {
     arrowHex: isVivid ? '#30D158' : '#7D9E85',
     arrowNum: isVivid ? 0x30d158 : 0x7d9e85,
     arcNum: isVivid ? 0xffd60a : 0xc8a25a,
-    groundArcNum: isVivid ? 0xff9f0a : 0xb87e52
+    groundArcNum: isVivid ? 0xff9f0a : 0xb87e52,
+    gtaCasingHex: '#070B12',
+    gtaCasingNum: 0x070b12,
+    gtaCoreHex: isAmber ? '#D1934B' : palette === 'olive' ? '#8BAE6B' : isVivid ? '#EAB308' : '#7BA6CE',
+    gtaCoreNum: isAmber ? 0xd1934b : palette === 'olive' ? 0x8bae6b : isVivid ? 0xeab308 : 0x7ba6ce,
+    gtaHiHex: isAmber ? '#FDE68A' : palette === 'olive' ? '#D9F99D' : isVivid ? '#FEF08A' : '#CFE2F3',
+    gtaHiNum: isAmber ? 0xfde68a : palette === 'olive' ? 0xd9f99d : isVivid ? 0xfef08a : 0xcfe2f3
   };
 }
 
@@ -689,6 +703,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   importedGpx,
   lockedTarget,
   lockedBearing,
+  activeRoute,
   isSimMode,
   syntheticLandscape = false,
   headingUp,
@@ -699,23 +714,82 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   onSelectTarget,
   onSelectUserPin,
   onRequestPinAt,
-  onSimMoveTo
+  onSimMoveTo,
+  onStartGtaRoute
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneResizeRef = useRef<(() => void) | null>(null);
   const followPlayerRef = useRef<boolean>(false);
   const [badges, setBadges] = useState<ProjectedBadge[]>([]);
   const [camAzimuthDeg, setCamAzimuthDeg] = useState<number>(0);
-  const [inspectedSpot, setInspectedSpot] = useState<{
-    lat: number;
-    lon: number;
-    ele: number;
-    slope: number;
-    screenX: number;
-    screenY: number;
-  } | null>(null);
+  const [radialSpot, setRadialSpot] = useState<RadialSpotState | null>(null);
+  const radialSpotRef = useRef<RadialSpotState | null>(null);
+  radialSpotRef.current = radialSpot;
   const [satLoading, setSatLoading] = useState(false);
   const [showGestureHint, setShowGestureHint] = useState(true);
+
+  const routeFlowDataRef = useRef<{
+    worldPts: THREE.Vector3[];
+    cumDist: number[];
+    totalDist: number;
+    chevrons: THREE.Mesh[];
+    destRing: THREE.Mesh | null;
+    destCore: THREE.Mesh | null;
+  } | null>(null);
+
+  const actionCallbacksRef = useRef({
+    onRequestPinAt,
+    onSelectTarget,
+    onSimMoveTo,
+    onStartGtaRoute,
+    isSimMode,
+    verticalScale
+  });
+  actionCallbacksRef.current = {
+    onRequestPinAt,
+    onSelectTarget,
+    onSimMoveTo,
+    onStartGtaRoute,
+    isSimMode,
+    verticalScale
+  };
+
+  const executeRadialAction = useCallback((action: RadialActionId, spot: RadialSpotState) => {
+    const cb = actionCallbacksRef.current;
+    if (navigator.vibrate) navigator.vibrate(24);
+
+    if (action === 'navigate-gta') {
+      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele);
+    } else if (action === 'pin-here') {
+      cb.onRequestPinAt(spot.lat, spot.lon, spot.ele);
+    } else if (action === 'fly-move') {
+      if (cb.isSimMode) {
+        cb.onSimMoveTo(spot.lat, spot.lon);
+      } else if (sceneRef.current) {
+        const { camera, controls } = sceneRef.current;
+        const gEle = sampleDemElevation(dataset.dem, dataset.bounds, spot.lat, spot.lon);
+        const [tx, ty, tz] = latLonToWorld3D(spot.lat, spot.lon, gEle, dataset.bounds, cb.verticalScale);
+        controls.target.set(tx, ty + 18, tz);
+        camera.position.set(tx - 240, ty + 380, tz + 520);
+        controls.update();
+      }
+    } else if (action === 'lock-radar') {
+      cb.onSelectTarget({
+        id: `spot-${Date.now()}`,
+        name: `Điểm 3D (${spot.ele}m)`,
+        lat: spot.lat,
+        lon: spot.lon,
+        ele: spot.ele,
+        category: 'checkpoint'
+      });
+    }
+
+    setRadialSpot(null);
+    radialSpotRef.current = null;
+    if (sceneRef.current) {
+      sceneRef.current.inspectMarker.visible = false;
+    }
+  }, [dataset]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowGestureHint(false), 3500);
@@ -778,6 +852,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     pinsGroup: THREE.Group;
     trackGroup: THREE.Group;
     targetArcGroup: THREE.Group;
+    routeFlowGroup: THREE.Group;
     playerGroup: THREE.Group;
     viewConeMesh: THREE.Mesh;
     courseArrowGroup: THREE.Group;
@@ -957,7 +1032,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const pinsGroup = new THREE.Group();
     const trackGroup = new THREE.Group();
     const targetArcGroup = new THREE.Group();
-    scene.add(overlaysGroup, pinsGroup, trackGroup, targetArcGroup);
+    const routeFlowGroup = new THREE.Group();
+    scene.add(overlaysGroup, pinsGroup, trackGroup, targetArcGroup, routeFlowGroup);
 
     // Player 3D Group (Avatar + 120m Range Ring + Compass View Cone + Laser Sighting Beam + GPS Course Vector)
     const playerGroup = new THREE.Group();
@@ -1124,6 +1200,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       pinsGroup,
       trackGroup,
       targetArcGroup,
+      routeFlowGroup,
       playerGroup,
       viewConeMesh,
       courseArrowGroup,
@@ -1146,12 +1223,13 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       }
     };
 
-    // Raycasting for Double-Tap / Long-Press on 3D Mountain
+    // Raycasting & GTA V-Style Long-Press Radial Swipe Wheel on 3D Mountain
     const raycaster = new THREE.Raycaster();
+    const activePointerIds = new Set<number>();
     const pointerDownPos = { x: 0, y: 0, time: 0 };
     let longPressTimer: number | null = null;
 
-    const triggerInspectAtClientXY = (clientX: number, clientY: number) => {
+    const clientToLocalXY = (clientX: number, clientY: number) => {
       const rect = renderer.domElement.getBoundingClientRect();
       const viewW = renderer.domElement.clientWidth || rect.width;
       const viewH = renderer.domElement.clientHeight || rect.height;
@@ -1161,6 +1239,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const localY = liveStateRef.current.syntheticLandscape
         ? rect.right - clientX
         : clientY - rect.top;
+      return { localX, localY, viewW, viewH };
+    };
+
+    const openRadialAtClientXY = (
+      clientX: number,
+      clientY: number,
+      pointerActive: boolean
+    ) => {
+      const { localX, localY, viewW, viewH } = clientToLocalXY(clientX, clientY);
       const ndc = new THREE.Vector2(
         (localX / Math.max(1, viewW)) * 2 - 1,
         -(localY / Math.max(1, viewH)) * 2 + 1
@@ -1172,34 +1259,78 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         const { lat, lon } = world3DToLatLon(pt.x, pt.z, dataset.bounds);
         const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, lat, lon));
         const slope = Math.round(sampleDemSlopeDeg(dataset.dem, dataset.bounds, lat, lon));
-        inspectMarker.position.set(pt.x, pt.y + 4, pt.z);
+        inspectMarker.position.set(pt.x, pt.y + 4.5, pt.z);
         inspectMarker.visible = true;
-        if (navigator.vibrate) navigator.vibrate(18);
-        const padX = Math.min(150, viewW * 0.45);
-        setInspectedSpot({
+        if (navigator.vibrate) navigator.vibrate(22);
+
+        if (pointerActive) {
+          controls.enabled = false;
+        }
+        const padX = Math.min(132, Math.max(96, viewW * 0.25));
+        const padY = Math.min(136, Math.max(100, viewH * 0.34));
+        const nextSpot: RadialSpotState = {
           lat: Number(lat.toFixed(6)),
           lon: Number(lon.toFixed(6)),
           ele,
           slope,
           screenX: Math.min(viewW - padX, Math.max(padX, localX)),
-          screenY: Math.max(Math.min(90, viewH * 0.45), localY - 16)
-        });
+          screenY: Math.min(viewH - padY, Math.max(padY, localY)),
+          originX: localX,
+          originY: localY,
+          dragX: 0,
+          dragY: 0,
+          activeSector: null,
+          pointerActive
+        };
+        radialSpotRef.current = nextSpot;
+        setRadialSpot(nextSpot);
       }
     };
 
     const onPointerDown = (e: PointerEvent) => {
       setShowGestureHint(false);
       liveStateRef.current.onMapInteractionChange?.(true);
+      activePointerIds.add(e.pointerId);
+
+      if (activePointerIds.size > 1) {
+        if (longPressTimer) {
+          window.clearTimeout(longPressTimer);
+          longPressTimer = null;
+        }
+        return;
+      }
+
       pointerDownPos.x = e.clientX;
       pointerDownPos.y = e.clientY;
       pointerDownPos.time = performance.now();
       if (longPressTimer) window.clearTimeout(longPressTimer);
       longPressTimer = window.setTimeout(() => {
-        triggerInspectAtClientXY(e.clientX, e.clientY);
-      }, 520);
+        longPressTimer = null;
+        openRadialAtClientXY(e.clientX, e.clientY, true);
+      }, 440);
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      const activeSpot = radialSpotRef.current;
+      if (activeSpot && activeSpot.pointerActive) {
+        const { localX, localY } = clientToLocalXY(e.clientX, e.clientY);
+        const dragX = localX - activeSpot.originX;
+        const dragY = localY - activeSpot.originY;
+        const nextSector = resolveRadialSector(dragX, dragY, 24);
+        if (nextSector && nextSector !== activeSpot.activeSector && navigator.vibrate) {
+          navigator.vibrate(10);
+        }
+        const updated: RadialSpotState = {
+          ...activeSpot,
+          dragX,
+          dragY,
+          activeSector: nextSector
+        };
+        radialSpotRef.current = updated;
+        setRadialSpot(updated);
+        return;
+      }
+
       if (longPressTimer) {
         const dist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
         if (dist > 10) {
@@ -1209,16 +1340,35 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       }
     };
 
-    const onPointerUp = () => {
+    const onPointerUp = (e: PointerEvent) => {
+      activePointerIds.delete(e.pointerId);
       liveStateRef.current.onMapInteractionChange?.(false);
       if (longPressTimer) {
         window.clearTimeout(longPressTimer);
         longPressTimer = null;
       }
+      controls.enabled = true;
+
+      const activeSpot = radialSpotRef.current;
+      if (activeSpot && activeSpot.pointerActive) {
+        if (activeSpot.activeSector) {
+          executeRadialAction(activeSpot.activeSector, activeSpot);
+        } else {
+          const pinned: RadialSpotState = {
+            ...activeSpot,
+            dragX: 0,
+            dragY: 0,
+            activeSector: null,
+            pointerActive: false
+          };
+          radialSpotRef.current = pinned;
+          setRadialSpot(pinned);
+        }
+      }
     };
 
     const onDblClick = (e: MouseEvent) => {
-      triggerInspectAtClientXY(e.clientX, e.clientY);
+      openRadialAtClientXY(e.clientX, e.clientY, false);
     };
 
     renderer.domElement.addEventListener('pointerdown', onPointerDown);
@@ -1241,6 +1391,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     let rafId = 0;
     let frameCounter = 0;
     const tempV = new THREE.Vector3();
+    const chevronDir = new THREE.Vector3();
+    const chevronRight = new THREE.Vector3();
+    const chevronUp = new THREE.Vector3();
+    const chevronZAxis = new THREE.Vector3();
+    const chevronMat4 = new THREE.Matrix4();
+    const WORLD_UP = new THREE.Vector3(0, 1, 0);
 
     const animate = () => {
       rafId = requestAnimationFrame(animate);
@@ -1272,6 +1428,59 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const ringScale = 0.78 + liftPhase * 0.65;
       pillarPulseMesh.scale.set(ringScale, ringScale, ringScale);
       pillarPulseMat.opacity = (1 - liftPhase) * 0.85;
+
+      // Animate GTA V 3D Tactical Route Chevrons (42 m/s continuous terrain flow) & Destination Beacon
+      const flow = routeFlowDataRef.current;
+      if (flow && flow.totalDist > 8 && flow.chevrons.length > 0) {
+        const { worldPts, cumDist, totalDist, chevrons, destRing, destCore } = flow;
+        const spacing = totalDist / chevrons.length;
+        const speedMps = 42;
+        const shiftM = (nowMs * 0.001 * speedMps) % totalDist;
+
+        for (let i = 0; i < chevrons.length; i++) {
+          const ch = chevrons[i];
+          const targetD = (i * spacing + shiftM) % totalDist;
+
+          // Locate segment containing targetD via binary search
+          let lo = 0;
+          let hi = cumDist.length - 2;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (cumDist[mid] <= targetD) lo = mid;
+            else hi = mid - 1;
+          }
+          const d0 = cumDist[lo];
+          const d1 = cumDist[lo + 1];
+          const frac = d1 > d0 ? (targetD - d0) / (d1 - d0) : 0;
+
+          const pA = worldPts[lo];
+          const pB = worldPts[lo + 1];
+          ch.position.lerpVectors(pA, pB, frac);
+          ch.position.y += 7.5;
+
+          chevronDir.subVectors(pB, pA);
+          if (chevronDir.lengthSq() > 1e-4) {
+            chevronDir.normalize();
+            chevronRight.crossVectors(chevronDir, WORLD_UP);
+            if (chevronRight.lengthSq() < 1e-4) chevronRight.set(1, 0, 0);
+            else chevronRight.normalize();
+            chevronZAxis.copy(chevronDir).negate();
+            chevronUp.crossVectors(chevronZAxis, chevronRight).normalize();
+            chevronMat4.makeBasis(chevronRight, chevronUp, chevronZAxis);
+            ch.quaternion.setFromRotationMatrix(chevronMat4);
+          }
+          ch.visible = targetD > 10 && targetD < totalDist - 12;
+        }
+
+        if (destRing) {
+          const dScale = 1 + Math.sin(nowMs * 0.0055) * 0.22;
+          destRing.scale.set(dScale, dScale, dScale);
+        }
+        if (destCore) {
+          destCore.rotation.y += 0.032;
+          destCore.position.y = destCore.userData.baseY + Math.sin(nowMs * 0.0045) * 7;
+        }
+      }
 
       // Rotate Compass View Cone (clockwise bearing -> negative Y rotation in Three.js!)
       const targetConeRotY = -(st.compassHeading * Math.PI) / 180;
@@ -1479,6 +1688,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         clearAndDisposeGroup(curCtx.pinsGroup);
         clearAndDisposeGroup(curCtx.trackGroup);
         clearAndDisposeGroup(curCtx.targetArcGroup);
+        clearAndDisposeGroup(curCtx.routeFlowGroup);
+        routeFlowDataRef.current = null;
         curCtx.tacticalTexture?.dispose();
         curCtx.topoTexture?.dispose();
         curCtx.nightTexture?.dispose();
@@ -1868,25 +2079,208 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const arcMat = new THREE.LineBasicMaterial({ color: ov.arcNum });
     grp.add(new THREE.Line(arcGeo, arcMat));
 
-    // 2. Draped Ground Slope Line (shows exact terrain profile between you and target!)
-    const groundPts: THREE.Vector3[] = [];
-    const samples = 40;
-    for (let i = 0; i <= samples; i++) {
-      const f = i / samples;
-      const lat = playerLat + (lockedTarget.lat - playerLat) * f;
-      const lon = playerLon + (lockedTarget.lon - playerLon) * f;
-      const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
-      const [gx, gy, gz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
-      groundPts.push(new THREE.Vector3(gx, gy + 6, gz));
+    // 2. Draped Ground Slope Line (only when no GTA trail route is active so paths don't clutter)
+    if (!activeRoute) {
+      const groundPts: THREE.Vector3[] = [];
+      const samples = 40;
+      for (let i = 0; i <= samples; i++) {
+        const f = i / samples;
+        const lat = playerLat + (lockedTarget.lat - playerLat) * f;
+        const lon = playerLon + (lockedTarget.lon - playerLon) * f;
+        const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
+        const [gx, gy, gz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
+        groundPts.push(new THREE.Vector3(gx, gy + 6, gz));
+      }
+      const groundGeo = new THREE.BufferGeometry().setFromPoints(groundPts);
+      const groundMat = new THREE.LineBasicMaterial({
+        color: ov.groundArcNum,
+        transparent: true,
+        opacity: 0.72
+      });
+      grp.add(new THREE.Line(groundGeo, groundMat));
     }
-    const groundGeo = new THREE.BufferGeometry().setFromPoints(groundPts);
-    const groundMat = new THREE.LineBasicMaterial({
-      color: ov.groundArcNum,
-      transparent: true,
-      opacity: 0.72
-    });
-    grp.add(new THREE.Line(groundGeo, groundMat));
-  }, [dataset, lockedTarget, lockedBearing, playerLat, playerLon, playerEle, verticalScale, palette]);
+  }, [dataset, lockedTarget, lockedBearing, activeRoute, playerLat, playerLon, playerEle, verticalScale, palette]);
+
+  // 7b. Render GTA V-Style 3D Tactical Route Ribbon, Multi-Layer Lines & Animated Marching Chevrons
+  useEffect(() => {
+    const ctx = sceneRef.current;
+    if (!ctx) return;
+    const grp = ctx.routeFlowGroup;
+    clearAndDisposeGroup(grp);
+    routeFlowDataRef.current = null;
+
+    if (!activeRoute || activeRoute.points.length < 2) return;
+
+    const ov = getMapOverlayPalette(palette);
+    const clippedRuns = clipAndSubdividePolylineToBounds(activeRoute.points, dataset.bounds, 14);
+    if (clippedRuns.length === 0) return;
+
+    const buildRibbonStrip = (pts: THREE.Vector3[], halfW: number, liftOffset: number) => {
+      const positions: number[] = [];
+      for (let i = 0; i < pts.length; i++) {
+        const prev = pts[Math.max(0, i - 1)];
+        const next = pts[Math.min(pts.length - 1, i + 1)];
+        const tx = next.x - prev.x;
+        const tz = next.z - prev.z;
+        const len = Math.hypot(tx, tz) || 1;
+        const rx = (-tz / len) * halfW;
+        const rz = (tx / len) * halfW;
+        const py = pts[i].y + liftOffset;
+        positions.push(pts[i].x - rx, py, pts[i].z - rz);
+        positions.push(pts[i].x + rx, py, pts[i].z + rz);
+      }
+      const triIndices: number[] = [];
+      for (let i = 0; i < pts.length - 1; i++) {
+        const a = i * 2;
+        const b = a + 1;
+        const c = a + 2;
+        const d = a + 3;
+        triIndices.push(a, c, b, b, c, d);
+      }
+      const stripGeo = new THREE.BufferGeometry();
+      stripGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+      stripGeo.setIndex(triIndices);
+      return stripGeo;
+    };
+
+    const flowPts: THREE.Vector3[] = [];
+    for (const run of clippedRuns) {
+      if (run.length < 2) continue;
+      const basePts = run.map(([lat, lon]) => {
+        const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
+        const [x, y, z] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
+        return new THREE.Vector3(x, y, z);
+      });
+      if (flowPts.length === 0) {
+        flowPts.push(...basePts);
+      }
+
+      // Terrain-draped tactical ribbon casing + core so path stays thick across all mobile WebGL drivers
+      grp.add(
+        new THREE.Mesh(
+          buildRibbonStrip(basePts, 10.5, 4.4),
+          new THREE.MeshBasicMaterial({
+            color: ov.gtaCasingNum,
+            transparent: true,
+            opacity: 0.82,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        )
+      );
+      grp.add(
+        new THREE.Mesh(
+          buildRibbonStrip(basePts, 5.4, 5.5),
+          new THREE.MeshBasicMaterial({
+            color: ov.gtaCoreNum,
+            transparent: true,
+            opacity: 0.9,
+            side: THREE.DoubleSide,
+            depthWrite: false
+          })
+        )
+      );
+
+      // 3 crisp elevation-draped guide lines (4.8m casing, 5.8m core, 6.8m highlight filament)
+      const layers: [number, number, number][] = [
+        [4.8, ov.gtaCasingNum, 0.9],
+        [5.8, ov.gtaCoreNum, 0.96],
+        [6.8, ov.gtaHiNum, 0.88]
+      ];
+      for (const [liftM, colNum, op] of layers) {
+        const linePts = basePts.map((p) => new THREE.Vector3(p.x, p.y + liftM, p.z));
+        grp.add(
+          new THREE.Line(
+            new THREE.BufferGeometry().setFromPoints(linePts),
+            new THREE.LineBasicMaterial({ color: colNum, transparent: true, opacity: op })
+          )
+        );
+      }
+    }
+
+    if (flowPts.length < 2) return;
+
+    const cumDist: number[] = [0];
+    let totalDist = 0;
+    for (let i = 1; i < flowPts.length; i++) {
+      totalDist += flowPts[i].distanceTo(flowPts[i - 1]);
+      cumDist.push(totalDist);
+    }
+
+    const chevronCount = Math.min(28, Math.max(4, Math.floor(totalDist / 48)));
+    const chevrons: THREE.Mesh[] = [];
+    for (let i = 0; i < chevronCount; i++) {
+      const chGeo = new THREE.BufferGeometry();
+      const verts = new Float32Array([
+        0, 0, -10.5, 8.5, 0, 4.5, 0, 0, -2.0,
+        0, 0, -10.5, 0, 0, -2.0, -8.5, 0, 4.5
+      ]);
+      chGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      const chMat = new THREE.MeshBasicMaterial({
+        color: ov.gtaHiNum,
+        transparent: true,
+        opacity: 0.95,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      });
+      const mesh = new THREE.Mesh(chGeo, chMat);
+      mesh.visible = false;
+      grp.add(mesh);
+      chevrons.push(mesh);
+    }
+
+    // Pulsing Tactical Destination Beacon at endpoint
+    const destGround = sampleDemElevation(
+      dataset.dem,
+      dataset.bounds,
+      activeRoute.destLat,
+      activeRoute.destLon
+    );
+    const [dx, dy, dz] = latLonToWorld3D(
+      activeRoute.destLat,
+      activeRoute.destLon,
+      destGround,
+      dataset.bounds,
+      verticalScale
+    );
+
+    const destRingGeo = new THREE.RingGeometry(18, 28, 32);
+    destRingGeo.rotateX(-Math.PI / 2);
+    destRingGeo.translate(dx, dy + 6.5, dz);
+    const destRing = new THREE.Mesh(
+      destRingGeo,
+      new THREE.MeshBasicMaterial({
+        color: ov.gtaHiNum,
+        transparent: true,
+        opacity: 0.86,
+        side: THREE.DoubleSide,
+        depthWrite: false
+      })
+    );
+    grp.add(destRing);
+
+    const destCoreGeo = new THREE.OctahedronGeometry(13, 0);
+    const destCore = new THREE.Mesh(
+      destCoreGeo,
+      new THREE.MeshBasicMaterial({
+        color: ov.gtaCoreNum,
+        transparent: true,
+        opacity: 0.94
+      })
+    );
+    destCore.position.set(dx, dy + 42, dz);
+    destCore.userData.baseY = dy + 42;
+    grp.add(destCore);
+
+    routeFlowDataRef.current = {
+      worldPts: flowPts,
+      cumDist,
+      totalDist,
+      chevrons,
+      destRing,
+      destCore
+    };
+  }, [dataset, activeRoute, verticalScale, palette]);
 
   // 8. Fly Camera Smoothly to Requested Coordinate
   useEffect(() => {
@@ -2022,82 +2416,26 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         </button>
       </div>
 
-      {/* Raycast Spot Inspector Popover (Double-click or Long-press on 3D mountain) */}
-      {inspectedSpot && (
-        <div
-          className="spot-inspector-card"
-          style={{ left: `${inspectedSpot.screenX}px`, top: `${inspectedSpot.screenY}px` }}
-        >
-          <div className="spot-inspector-header">
-            <span>
-              ⛰️ Cao <strong>{inspectedSpot.ele}m</strong> • Dốc{' '}
-              <strong className={inspectedSpot.slope >= 32 ? 'text-danger' : ''}>{inspectedSpot.slope}°</strong>
-            </span>
-            <button
-              type="button"
-              className="spot-close"
-              onClick={() => {
-                setInspectedSpot(null);
-                if (sceneRef.current) sceneRef.current.inspectMarker.visible = false;
-              }}
-            >
-              ✕
-            </button>
-          </div>
-          <div className="spot-coords">
-            {inspectedSpot.lat.toFixed(5)}, {inspectedSpot.lon.toFixed(5)} • Cách bạn{' '}
-            <strong>
-              {formatDistance(
-                haversineDistanceM(playerLat, playerLon, inspectedSpot.lat, inspectedSpot.lon)
-              )}
-            </strong>{' '}
-            ({Math.round(computeBearingDeg(playerLat, playerLon, inspectedSpot.lat, inspectedSpot.lon))}°)
-          </div>
-          <div className="spot-actions">
-            <button
-              type="button"
-              onClick={() => {
-                onRequestPinAt(inspectedSpot.lat, inspectedSpot.lon, inspectedSpot.ele);
-                setInspectedSpot(null);
-              }}
-            >
-              🪨 Ghim tại đây
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                onSelectTarget({
-                  id: `spot-${Date.now()}`,
-                  name: `Điểm 3D (${inspectedSpot.ele}m)`,
-                  lat: inspectedSpot.lat,
-                  lon: inspectedSpot.lon,
-                  ele: inspectedSpot.ele,
-                  category: 'checkpoint'
-                });
-                setInspectedSpot(null);
-              }}
-            >
-              🎯 Khóa Radar
-            </button>
-            {isSimMode && (
-              <button
-                type="button"
-                className="sim-go-btn"
-                onClick={() => {
-                  onSimMoveTo(inspectedSpot.lat, inspectedSpot.lon);
-                  setInspectedSpot(null);
-                }}
-              >
-                🏃 Đi tới đây
-              </button>
-            )}
-          </div>
-        </div>
+      {/* GTA V-Style Tactical Radial Swipe Wheel (Long-Press + Swipe on 3D Mountain) */}
+      {radialSpot && (
+        <TacticalRadialWheel
+          spot={radialSpot}
+          playerLat={playerLat}
+          playerLon={playerLon}
+          isSimMode={isSimMode}
+          palette={palette}
+          onSelectAction={(act) => executeRadialAction(act, radialSpot)}
+          onClose={() => {
+            setRadialSpot(null);
+            radialSpotRef.current = null;
+            if (sceneRef.current) sceneRef.current.inspectMarker.visible = false;
+          }}
+        />
       )}
 
       {showGestureHint && (
         <div className="hint-3d-gesture">
-          1 ngón xoay • 2 ngón phóng/nghiêng • Nhấn giữ sườn núi để ghim
+          1 ngón xoay • 2 ngón phóng • Nhấn giữ + vuốt vòng tròn để Đi tới / Ghim
         </div>
       )}
     </div>

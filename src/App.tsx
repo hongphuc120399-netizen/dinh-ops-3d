@@ -7,6 +7,7 @@ import type {
   NuiDinhDataset,
   SafetyAlert,
   TacticalPalette,
+  TacticalRouteResult,
   TacticalTarget,
   Terrain3DSkin,
   TrackPoint,
@@ -15,13 +16,15 @@ import type {
 } from './types';
 import {
   computeBearingDeg,
+  computeTacticalTrailRoute,
   evaluateSafetyAlerts,
   formatBearingCardinal,
   formatClockDirection,
   formatDistance,
   haversineDistanceM,
   minDistanceToPowerlinesM,
-  sampleDemElevation
+  sampleDemElevation,
+  trimRouteFromPlayer
 } from './utils/geoMath';
 import { countCachedTiles, loadPersistedSession, vaultSet } from './utils/offlineVault';
 import {
@@ -126,6 +129,8 @@ export const App: React.FC = () => {
   const [importedGpx, setImportedGpx] = useState<ImportedGpxTrack[]>([]);
   const [lockedTarget, setLockedTarget] = useState<TacticalTarget | null>(null);
   const [lockedBearing, setLockedBearing] = useState<number | null>(null);
+  const [activeRoute, setActiveRoute] = useState<TacticalRouteResult | null>(null);
+  const [simRouteWalking, setSimRouteWalking] = useState<boolean>(false);
   const [cachedTileCount, setCachedTileCount] = useState<number>(0);
   const [vaultHydrated, setVaultHydrated] = useState<boolean>(false);
 
@@ -604,12 +609,25 @@ export const App: React.FC = () => {
   }, [isSimMode, simAutoWalk, redRouteFlatPoints]);
 
   const simMoveIntervalRef = useRef<number | null>(null);
-  // Smooth walk to clicked 3D/2D destination in Simulator mode
+  const simRouteWalkIntervalRef = useRef<number | null>(null);
+
+  const stopSimWalks = useCallback(() => {
+    if (simMoveIntervalRef.current) {
+      window.clearInterval(simMoveIntervalRef.current);
+      simMoveIntervalRef.current = null;
+    }
+    if (simRouteWalkIntervalRef.current) {
+      window.clearInterval(simRouteWalkIntervalRef.current);
+      simRouteWalkIntervalRef.current = null;
+    }
+    setSimRouteWalking(false);
+    setSpeedMps(0);
+  }, []);
+
+  // Smooth walk to clicked 3D/2D destination in Simulator mode (direct move)
   const handleSimMoveTo = useCallback(
     (destLat: number, destLon: number) => {
-      if (simMoveIntervalRef.current) {
-        window.clearInterval(simMoveIntervalRef.current);
-      }
+      stopSimWalks();
       simDestRef.current = { lat: destLat, lon: destLon };
       const brng = computeBearingDeg(playerLat, playerLon, destLat, destLon);
       setCompassHeading(Math.round(brng));
@@ -634,8 +652,120 @@ export const App: React.FC = () => {
         }
       }, 90);
     },
-    [playerLat, playerLon]
+    [playerLat, playerLon, stopSimWalks]
   );
+
+  // Smoothly walk player along computed GTA V trail vertices in Simulator mode
+  const handleSimFollowRoute = useCallback(
+    (routePoints: [number, number][]) => {
+      stopSimWalks();
+      if (routePoints.length < 2) return;
+
+      // Downsample evenly across waypoints so preview completes smoothly (~50-75 steps)
+      const stride = Math.max(1, Math.floor(routePoints.length / 68));
+      const walkPts: [number, number][] = [];
+      for (let i = 1; i < routePoints.length - 1; i += stride) {
+        walkPts.push(routePoints[i]);
+      }
+      walkPts.push(routePoints[routePoints.length - 1]);
+
+      let idx = 0;
+      let prevLat = routePoints[0][0];
+      let prevLon = routePoints[0][1];
+      setSimRouteWalking(true);
+
+      simRouteWalkIntervalRef.current = window.setInterval(() => {
+        if (idx >= walkPts.length) {
+          stopSimWalks();
+          return;
+        }
+        const [nLat, nLon] = walkPts[idx];
+        const brng = computeBearingDeg(prevLat, prevLon, nLat, nLon);
+        setCompassHeading(Math.round(brng));
+        setGpsCourse(Math.round(brng));
+        setSpeedMps(2.8);
+        setPlayerLat(Number(nLat.toFixed(6)));
+        setPlayerLon(Number(nLon.toFixed(6)));
+        prevLat = nLat;
+        prevLon = nLon;
+        idx++;
+        if (idx >= walkPts.length) {
+          stopSimWalks();
+        }
+      }, 125);
+    },
+    [stopSimWalks]
+  );
+
+  const handleClearGtaRoute = useCallback(() => {
+    stopSimWalks();
+    setActiveRoute((prev) => {
+      if (prev) {
+        setLockedTarget((lt) => (lt?.id === prev.id ? null : lt));
+      }
+      return null;
+    });
+  }, [stopSimWalks]);
+
+  const handleStartGtaRoute = useCallback(
+    (destLat: number, destLon: number, destEle: number, customName?: string) => {
+      setSimAutoWalk(false);
+      stopSimWalks();
+      const route = computeTacticalTrailRoute(
+        dataset,
+        playerLat,
+        playerLon,
+        destLat,
+        destLon,
+        customName || `Đích (${destEle}m)`
+      );
+      setActiveRoute(route);
+      setLockedTarget({
+        id: route.id,
+        name: route.destName,
+        lat: route.destLat,
+        lon: route.destLon,
+        ele: route.destEle,
+        category: 'checkpoint',
+        note: route.snappedToTrail
+          ? `Lộ trình GTA V bám mạng lưới trail (${formatDistance(route.totalDistanceM)}, +${route.ascentM}m)`
+          : `Đường thẳng địa hình (${formatDistance(route.totalDistanceM)})`
+      });
+      triggerFlyTo((playerLat + route.destLat) / 2, (playerLon + route.destLon) / 2);
+      triggerToast(
+        route.snappedToTrail
+          ? `🧭 Lộ trình bám trail GTA: ${formatDistance(route.totalDistanceM)} (+${route.ascentM}m • ~${route.etaMinutes}p)`
+          : `🧭 Đường đi trực tiếp: ${formatDistance(route.totalDistanceM)} (~${route.etaMinutes}p)`
+      );
+      if (isSimMode && route.points.length >= 2) {
+        handleSimFollowRoute(route.points);
+      }
+    },
+    [dataset, playerLat, playerLon, isSimMode, stopSimWalks, handleSimFollowRoute, triggerFlyTo, triggerToast]
+  );
+
+  // Cleanly trim remaining GTA V route behind player or clear upon arrival (< 14m)
+  const activeRouteRef = useRef<TacticalRouteResult | null>(null);
+  activeRouteRef.current = activeRoute;
+  useEffect(() => {
+    const cur = activeRouteRef.current;
+    if (!cur) return;
+    const distToDest = haversineDistanceM(playerLat, playerLon, cur.destLat, cur.destLon);
+    if (distToDest < 14) {
+      stopSimWalks();
+      setActiveRoute(null);
+      setLockedTarget((lt) => (lt?.id === cur.id ? null : lt));
+      triggerToast(`🎯 Đã tới "${cur.destName}"!`);
+      return;
+    }
+    setActiveRoute((prev) => (prev ? trimRouteFromPlayer(prev, playerLat, playerLon, dataset) : null));
+  }, [playerLat, playerLon, stopSimWalks, triggerToast]);
+
+  useEffect(() => {
+    if (!isSimMode) {
+      stopSimWalks();
+    }
+  }, [isSimMode, stopSimWalks]);
 
   // 5. Record Breadcrumb Tracklog Automatically when Player Moves > 4m
   useEffect(() => {
@@ -983,7 +1113,54 @@ export const App: React.FC = () => {
             </div>
           )}
 
-          {lockedTarget && homingMetrics && (
+          {activeRoute && (
+            <div className="homing-hud-banner gta-route-pill" onClick={() => setShowPrecisionRadar(true)}>
+              {homingMetrics && (
+                <div
+                  className="mini-radar-arrow"
+                  style={{ transform: `rotate(${homingMetrics.clock.deltaDeg}deg)` }}
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 2L4.5 20.5L12 16.5L19.5 20.5L12 2Z" />
+                  </svg>
+                </div>
+              )}
+              <span className="homing-compact-txt">
+                🧭 <strong>LỘ TRÌNH GTA:</strong> {formatDistance(activeRoute.totalDistanceM)} • +
+                {activeRoute.ascentM}m • ~{activeRoute.etaMinutes}p
+              </span>
+              {isSimMode && activeRoute.points.length >= 2 && (
+                <button
+                  type="button"
+                  className="gta-sim-step-btn"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    if (simRouteWalking) {
+                      stopSimWalks();
+                    } else {
+                      handleSimFollowRoute(activeRoute.points);
+                    }
+                  }}
+                  title={simRouteWalking ? 'Tạm dừng đi thử trên trail' : 'Chạy thử theo lộ trình GTA'}
+                >
+                  {simRouteWalking ? '⏸' : '▶'}
+                </button>
+              )}
+              <button
+                type="button"
+                className="homing-clear-btn"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  handleClearGtaRoute();
+                }}
+                title="Hủy lộ trình dẫn đường GTA"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
+          {lockedTarget && homingMetrics && !activeRoute && (
             <div className="homing-hud-banner" onClick={() => setShowPrecisionRadar(true)}>
               <div
                 className="mini-radar-arrow"
@@ -1236,6 +1413,7 @@ export const App: React.FC = () => {
               importedGpx={importedGpx}
               lockedTarget={lockedTarget}
               lockedBearing={lockedBearing}
+              activeRoute={activeRoute}
               isSimMode={isSimMode}
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
@@ -1244,12 +1422,15 @@ export const App: React.FC = () => {
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
+                setActiveRoute(null);
+                stopSimWalks();
                 setLockedTarget(t);
                 triggerToast(`🎯 Đã khóa mục tiêu: ${t.name}`);
               }}
               onSelectUserPin={handleSelectUserPin}
               onRequestPinAt={(lat, lon, ele) => setPendingPinCoords({ lat, lon, ele })}
               onSimMoveTo={handleSimMoveTo}
+              onStartGtaRoute={handleStartGtaRoute}
             />
           </div>
         )}
@@ -1272,6 +1453,7 @@ export const App: React.FC = () => {
               importedGpx={importedGpx}
               lockedTarget={lockedTarget}
               lockedBearing={lockedBearing}
+              activeRoute={activeRoute}
               isSimMode={isSimMode}
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
@@ -1281,12 +1463,15 @@ export const App: React.FC = () => {
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
+                setActiveRoute(null);
+                stopSimWalks();
                 setLockedTarget(t);
                 triggerToast(`🎯 Đã khóa mục tiêu: ${t.name}`);
               }}
               onSelectUserPin={handleSelectUserPin}
               onRequestPinAt={(lat, lon, ele) => setPendingPinCoords({ lat, lon, ele })}
               onSimMoveTo={handleSimMoveTo}
+              onStartGtaRoute={handleStartGtaRoute}
             />
           </div>
         )}
@@ -1540,7 +1725,10 @@ export const App: React.FC = () => {
           playerLon={playerLon}
           playerEle={playerEle}
           compassHeading={compassHeading}
-          onUnlock={() => setLockedTarget(null)}
+          onUnlock={() => {
+            setLockedTarget(null);
+            handleClearGtaRoute();
+          }}
           onClose={() => setShowPrecisionRadar(false)}
         />
       )}

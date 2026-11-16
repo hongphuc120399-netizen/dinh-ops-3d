@@ -3123,3 +3123,303 @@ select {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
+
+/* ============================================================================
+   GTA V-STYLE TACTICAL RADIAL SWIPE WHEEL & FLOWING ROUTE OVERLAYS
+   ============================================================================ */
+.tactical-radial-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 650;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.tactical-radial-overlay.is-dragging {
+  pointer-events: none;
+}
+
+.tactical-radial-overlay.is-pinned {
+  pointer-events: auto;
+  background: rgba(4, 7, 12, 0.28);
+  backdrop-filter: blur(2px);
+}
+
+.tactical-radial-wheel {
+  position: absolute;
+  width: 248px;
+  height: 248px;
+  transform: translate(-50%, -50%);
+  animation: radial-spring-in 190ms cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+.tactical-radial-overlay.is-dragging .tactical-radial-wheel {
+  pointer-events: none;
+}
+
+.tactical-radial-overlay.is-pinned .tactical-radial-wheel {
+  pointer-events: auto;
+}
+
+@keyframes radial-spring-in {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, -50%) scale(0.76);
+  }
+  70% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1.03);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, -50%) scale(1);
+  }
+}
+
+.radial-tele-badge {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.92);
+  backdrop-filter: blur(16px);
+  border: 1px solid var(--wheel-accent, var(--accent-border));
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65);
+  color: var(--text-primary);
+  font-size: 0.7rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.01em;
+}
+
+.radial-tele-sep {
+  opacity: 0.45;
+}
+
+.radial-svg-layer {
+  display: block;
+  width: 248px;
+  height: 248px;
+  filter: drop-shadow(0 10px 26px rgba(0, 0, 0, 0.7));
+}
+
+.radial-wedge {
+  cursor: pointer;
+  transition: fill 120ms ease-out, stroke 120ms ease-out, stroke-width 120ms ease-out;
+}
+
+.radial-wedge.is-active {
+  filter: drop-shadow(0 0 12px var(--wheel-glow, rgba(125, 211, 252, 0.35)));
+}
+
+.radial-sector-label {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  width: 72px;
+  padding: 4px 2px;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  text-align: center;
+  cursor: pointer;
+  transition: transform 110ms ease-out, color 110ms ease-out;
+}
+
+.radial-sector-label .rs-icon {
+  font-size: 0.92rem;
+  line-height: 1;
+  color: var(--wheel-accent, var(--accent-hud));
+}
+
+.radial-sector-label.is-primary .rs-icon,
+.radial-sector-label.is-primary .rs-title {
+  color: var(--wheel-gta, var(--accent-gold));
+}
+
+.radial-sector-label .rs-title {
+  font-size: 0.61rem;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  color: var(--text-primary);
+  line-height: 1.1;
+}
+
+.radial-sector-label .rs-sub {
+  font-size: 0.52rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  opacity: 0.72;
+  line-height: 1.05;
+}
+
+.radial-sector-label.is-active {
+  transform: translate(-50%, -50%) scale(1.1);
+}
+
+.radial-sector-label.is-active .rs-title,
+.radial-sector-label.is-active .rs-sub {
+  color: #f8fafc;
+  opacity: 1;
+}
+
+.radial-center-hub {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 68px;
+  height: 68px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(16, 24, 38, 0.96) 0%, rgba(7, 10, 16, 0.96) 100%);
+  border: 1.5px solid rgba(148, 163, 184, 0.36);
+  box-shadow: inset 0 0 12px rgba(0, 0, 0, 0.8), 0 4px 16px rgba(0, 0, 0, 0.7);
+  color: var(--text-secondary);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  cursor: pointer;
+}
+
+.radial-center-hub.has-selection {
+  border-color: var(--wheel-accent, var(--accent-hud));
+  color: #f8fafc;
+  box-shadow: 0 0 18px var(--wheel-glow, rgba(125, 211, 252, 0.3));
+}
+
+.rc-cross,
+.rc-active-icon {
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.rc-hint,
+.rc-active-text {
+  font-size: 0.56rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.radial-coord-strip {
+  position: absolute;
+  left: 50%;
+  top: calc(100% + 5px);
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.84);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  color: var(--text-secondary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Flowing GTA V 2D Route Dash & Tactical HUD Pill */
+.gta-tactical-route-flow {
+  animation: gta-route-dash 0.9s linear infinite;
+}
+
+@keyframes gta-route-dash {
+  from {
+    stroke-dashoffset: 24;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.gta-dest-pulse {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.gta-dest-pulse::before {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 50%;
+  border: 2px solid var(--gta-hi, #cfe2f3);
+  background: rgba(7, 11, 18, 0.45);
+  animation: gta-dest-ring 1.5s ease-out infinite;
+}
+
+.gta-dest-pulse span {
+  width: 10px;
+  height: 10px;
+  transform: rotate(45deg);
+  background: var(--gta-accent, #7ba6ce);
+  border: 1.5px solid #f8fafc;
+}
+
+@keyframes gta-dest-ring {
+  0% {
+    transform: scale(0.72);
+    opacity: 0.95;
+  }
+  100% {
+    transform: scale(1.45);
+    opacity: 0;
+  }
+}
+
+.homing-hud-banner.gta-route-pill {
+  background: linear-gradient(135deg, var(--accent-surface), rgba(9, 14, 24, 0.94));
+  border: 1px solid var(--accent-blue);
+  max-width: min(500px, 94vw);
+}
+
+.homing-hud-banner.gta-route-pill .mini-radar-arrow {
+  background: rgba(125, 211, 252, 0.16);
+  border-color: var(--accent-hud);
+  color: var(--accent-hud);
+}
+
+.homing-hud-banner.gta-route-pill .homing-compact-txt {
+  color: var(--text-primary);
+}
+
+.gta-sim-step-btn {
+  width: 22px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-surface);
+  color: var(--accent-hud);
+  font-size: 0.64rem;
+  line-height: 1;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  cursor: pointer;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tactical-radial-wheel {
+    animation: none;
+  }
+  .gta-tactical-route-flow,
+  .gta-dest-pulse::before {
+    animation: none;
+  }
+}
