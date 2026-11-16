@@ -11,7 +11,8 @@ const config: CapacitorConfig = {
   plugins: {
     CapacitorUpdater: {
       autoUpdate: false,
-      resetWhenUpdate: false
+      resetWhenUpdate: true,
+      statsUrl: ''
     }
   }
 };

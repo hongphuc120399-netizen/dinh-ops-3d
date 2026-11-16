@@ -541,6 +541,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
           version: remoteOta.version,
           note: remoteOta.note,
           source: 'github',
+          sha256: remoteOta.sha256,
           onProgress: (p) => setOtaProgress(p)
         });
         if (!res.appliedNative) {
@@ -598,6 +599,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
         version: `${remoteOta.version}-${Date.now()}`,
         note: remoteOta.note,
         source: 'github',
+        sha256: remoteOta.sha256,
         onProgress: (p) => setOtaProgress(p)
       });
       if (!res.appliedNative) {

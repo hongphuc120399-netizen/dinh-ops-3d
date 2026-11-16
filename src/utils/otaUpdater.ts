@@ -32,6 +32,7 @@ export interface AvailableOtaUpdate {
   note: string;
   bundleUrl: string;
   sizeBytes: number;
+  sha256?: string;
   releaseUrl?: string;
   isNewer: boolean;
 }
@@ -103,6 +104,27 @@ export function normalizeSemver(ver: string): [number, number, number] {
   const core = clean.split('-')[0] || '0.0.0';
   const parts = core.split('.').map((n) => parseInt(n, 10) || 0);
   return [parts[0] || 0, parts[1] || 0, parts[2] || 0];
+}
+
+export function normalizeSha256(raw?: string | null): string {
+  if (!raw) return '';
+  const cleaned = raw.trim().replace(/^sha256:/i, '').toLowerCase();
+  return /^[0-9a-f]{64}$/.test(cleaned) ? cleaned : '';
+}
+
+async function computeRemoteBundleSha256(bundleUrl: string): Promise<string> {
+  const res = await fetchWithTimeout(bundleUrl, { cache: 'no-store' }, 25000);
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} khi tải gói OTA để tính SHA-256`);
+  }
+  const buf = await res.arrayBuffer();
+  if (!globalThis.crypto?.subtle) {
+    throw new Error('Thiếu SHA-256 checksum và WebCrypto không khả dụng trên WebView này');
+  }
+  const digest = await globalThis.crypto.subtle.digest('SHA-256', buf);
+  return Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
 }
 
 export function isRemoteNewer(
@@ -183,6 +205,7 @@ interface GithubAsset {
   name: string;
   size: number;
   browser_download_url: string;
+  digest?: string | null;
 }
 
 interface GithubRelease {
@@ -247,6 +270,7 @@ export async function checkGithubOtaUpdate(
         let remoteVer = rel.tag_name.replace(/^ota-v?/i, '').replace(/^v/i, '');
         let remoteBuildNum: number | undefined;
         let builtAt = rel.published_at;
+        let remoteSha256 = normalizeSha256(zipAsset.digest);
         let rawBody = (rel.body || rel.name || `Phiên bản OTA ${remoteVer}`).trim();
 
         const metaMatch = rawBody.match(/<!--\s*DINH_OTA:(\{[\s\S]*?\})\s*-->/);
@@ -257,6 +281,8 @@ export async function checkGithubOtaUpdate(
             if (typeof parsedMeta.buildNumber === 'number') remoteBuildNum = parsedMeta.buildNumber;
             if (parsedMeta.builtAt) builtAt = parsedMeta.builtAt;
             if (parsedMeta.note) rawBody = parsedMeta.note;
+            const metaSha = normalizeSha256(parsedMeta.sha256);
+            if (metaSha) remoteSha256 = metaSha;
           } catch {
             // ignore malformed metadata tag
           }
@@ -272,6 +298,7 @@ export async function checkGithubOtaUpdate(
           note: cleanNote,
           bundleUrl: zipAsset.browser_download_url,
           sizeBytes: zipAsset.size,
+          sha256: remoteSha256 || undefined,
           releaseUrl: rel.html_url,
           isNewer: isRemoteNewer(
             remoteVer,
@@ -300,6 +327,7 @@ export interface ApplyOtaOptions {
   version: string;
   note: string;
   source: 'github' | 'lan';
+  sha256?: string;
   onProgress?: (percent: number) => void;
 }
 
@@ -308,7 +336,7 @@ export interface ApplyOtaOptions {
  * Preserves 100% of IndexedDB data (pins, photos, tracks, cached Google Satellite tiles).
  */
 export async function applyOtaBundle(options: ApplyOtaOptions): Promise<{ appliedNative: boolean }> {
-  const { bundleUrl, version, source, onProgress } = options;
+  const { bundleUrl, version, source, sha256, onProgress } = options;
 
   if (!Capacitor.isNativePlatform()) {
     // Web preview / PWA fallback: flush Service Worker cache and reload cleanly
@@ -319,15 +347,39 @@ export async function applyOtaBundle(options: ApplyOtaOptions): Promise<{ applie
     return { appliedNative: false };
   }
 
-  let handle: PluginListenerHandle | null = null;
+  const checksum = normalizeSha256(sha256) || (await computeRemoteBundleSha256(bundleUrl));
+
   try {
-    handle = await CapacitorUpdater.addListener('download', (ev) => {
+    const [{ bundle: curBundle }, { bundles }] = await Promise.all([
+      CapacitorUpdater.current(),
+      CapacitorUpdater.list()
+    ]);
+    const stale = bundles.filter(
+      (b) => b.version === version && b.id !== curBundle.id && b.id !== 'builtin'
+    );
+    for (const b of stale) {
+      await CapacitorUpdater.delete({ id: b.id }).catch(() => {});
+    }
+  } catch {
+    // best-effort stale bundle cleanup
+  }
+
+  let downloadHandle: PluginListenerHandle | null = null;
+  let failedHandle: PluginListenerHandle | null = null;
+  let failedDetail = '';
+  try {
+    downloadHandle = await CapacitorUpdater.addListener('download', (ev) => {
       onProgress?.(Math.max(0, Math.min(100, Math.round(ev.percent))));
+    });
+    failedHandle = await CapacitorUpdater.addListener('downloadFailed', (ev) => {
+      const errTxt = (ev as { version: string; error?: string }).error;
+      if (errTxt) failedDetail = errTxt;
     });
 
     const bundle = await CapacitorUpdater.download({
       url: bundleUrl,
-      version
+      version,
+      checksum
     });
 
     safeWriteJson(APPLIED_META_STORAGE_KEY, {
@@ -341,9 +393,15 @@ export async function applyOtaBundle(options: ApplyOtaOptions): Promise<{ applie
     // Terminal call: reloads WebView into the newly stored offline bundle immediately
     await CapacitorUpdater.set({ id: bundle.id });
     return { appliedNative: true };
+  } catch (err) {
+    const baseMsg = err instanceof Error ? err.message : String(err);
+    throw new Error(failedDetail ? `${baseMsg} (${failedDetail})` : baseMsg);
   } finally {
-    if (handle) {
-      await handle.remove().catch(() => {});
+    if (downloadHandle) {
+      await downloadHandle.remove().catch(() => {});
+    }
+    if (failedHandle) {
+      await failedHandle.remove().catch(() => {});
     }
   }
 }
@@ -388,6 +446,7 @@ export async function syncFromLaptopLan(
     version: uniqueVersionTag,
     note: manifest.note || 'Đồng bộ trực tiếp qua Wi-Fi Laptop',
     source: 'lan',
+    sha256: manifest.sha256,
     onProgress
   });
 

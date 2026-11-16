@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.0.2',
-  buildNumber: 202611142103,
-  builtAt: '2026-11-14T21:03:50+07:00',
-  note: "Mặc định xoay ngang trực tiếp qua OTA (không cần cài lại APK) + Thu gọn HUD & Cập nhật 1 chạm"
+  version: '1.0.3',
+  buildNumber: 202611160806,
+  builtAt: '2026-11-16T08:06:11+07:00',
+  note: "Sửa lỗi bắt buộc SHA-256 Checksum khi tải OTA trên Android + Mặc định nằm ngang"
 };

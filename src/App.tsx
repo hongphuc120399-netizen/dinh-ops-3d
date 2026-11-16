@@ -212,6 +212,7 @@ export const App: React.FC = () => {
         version: availableOta.version,
         note: availableOta.note,
         source: 'github',
+        sha256: availableOta.sha256,
         onProgress: (pct) => setQuickOtaProgress(pct)
       });
       if (!res.appliedNative) {
