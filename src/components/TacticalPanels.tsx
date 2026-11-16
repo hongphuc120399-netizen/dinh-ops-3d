@@ -15,12 +15,12 @@ import {
   formatDistance,
   haversineDistanceM,
   parseGpxText,
-  projectPointByBearing,
   sampleDemElevation
 } from '../utils/geoMath';
 import { compressImageFile, downloadNuiDinhOfflineTiles } from '../utils/offlineVault';
 import { CipherDecoderPanel } from './CipherDecoderPanel';
 import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
+import { TacticalSightingPanel, type PinRequestPayload } from './TacticalSightingPanel';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -463,9 +463,11 @@ interface ReconToolkitModalProps {
   initialApkUrl?: string | null;
   playerLat: number;
   playerLon: number;
+  compassHeading?: number;
   pitchDeg?: number;
   rollDeg?: number;
   useRealSensor?: boolean;
+  lockedTarget?: TacticalTarget | null;
   onToggleRealSensor?: (enable: boolean) => void;
   trackPoints: TrackPoint[];
   userPins: UserPin[];
@@ -484,9 +486,11 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   initialApkUrl = null,
   playerLat,
   playerLon,
+  compassHeading = 0,
   pitchDeg = 0,
   rollDeg = 0,
   useRealSensor = false,
+  lockedTarget = null,
   onToggleRealSensor,
   trackPoints,
   userPins,
@@ -498,11 +502,6 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   onClose
 }) => {
   const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
-
-  // Bearing Projection State
-  const [originId, setOriginId] = useState<string>('current');
-  const [azimuthDeg, setAzimuthDeg] = useState<string>('45');
-  const [distanceM, setDistanceM] = useState<string>('350');
 
   // Offline Tile Downloader State
   const [dlState, setDlState] = useState<{ running: boolean; done: number; total: number; msg?: string }>({
@@ -676,36 +675,27 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
     onClose();
   };
 
-  const handleProjectBearing = () => {
-    let baseLat = playerLat;
-    let baseLon = playerLon;
-    let baseLabel = 'Vị trí hiện tại';
-    if (originId !== 'current') {
-      const found = dataset.pois.find((p) => p.id === originId);
-      if (found) {
-        baseLat = found.lat;
-        baseLon = found.lon;
-        baseLabel = found.name;
-      }
+  const handlePinTargetsFromSighting = (items: PinRequestPayload[], closeModal = true) => {
+    if (items.length === 0) return;
+    let focusItem = items[items.length - 1];
+    for (const item of items) {
+      const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, item.lat, item.lon));
+      const pin: UserPin = {
+        id: `sight-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        name: item.label,
+        category: 'checkpoint',
+        lat: item.lat,
+        lon: item.lon,
+        ele,
+        accuracy: null,
+        createdAt: Date.now(),
+        note: item.note
+      };
+      onCreateSolvedPin(pin, item.lockTarget ?? items.length === 1);
+      if (item.lockTarget) focusItem = item;
     }
-    const az = parseFloat(azimuthDeg) || 0;
-    const dist = parseFloat(distanceM) || 100;
-    const dest = projectPointByBearing(baseLat, baseLon, az, dist);
-    const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, dest.lat, dest.lon));
-    const projectedPin: UserPin = {
-      id: `proj-${Date.now()}`,
-      name: `Đích ${Math.round(dist)}m ∠${Math.round(az)}°`,
-      category: 'checkpoint',
-      lat: dest.lat,
-      lon: dest.lon,
-      ele,
-      accuracy: null,
-      createdAt: Date.now(),
-      note: `Chiếu từ "${baseLabel}": đi ${dist}m hướng ${az}°`
-    };
-    onCreateSolvedPin(projectedPin, true);
-    onFlyTo(dest.lat, dest.lon);
-    onClose();
+    onFlyTo(focusItem.lat, focusItem.lon);
+    if (closeModal) onClose();
   };
 
   const handleGpxFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -786,7 +776,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
             🛠️ Kỹ Thuật
           </button>
           <button type="button" className={tab === 'bearing' ? 'active' : ''} onClick={() => setTab('bearing')}>
-            🧭 Chiếu Góc
+            🎯 Giao Hội &amp; AR
           </button>
           <button type="button" className={tab === 'offline' ? 'active' : ''} onClick={() => setTab('offline')}>
             📥 Offline
@@ -808,47 +798,19 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
         )}
 
         {tab === 'bearing' && (
-          <div className="toolkit-body">
-            <p className="helper-note">
-              Dành cho đề mật thư kiểu trinh sát: <em>"Từ Chùa Hang Tổ đi 350m về hướng 45° Đông Bắc"</em>:
-            </p>
-            <div className="form-group">
-              <label>Điểm gốc xuất phát</label>
-              <select value={originId} onChange={(e) => setOriginId(e.target.value)}>
-                <option value="current">📍 Vị trí hiện tại của tôi ({playerLat.toFixed(4)}, {playerLon.toFixed(4)})</option>
-                {dataset.pois.slice(0, 25).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.ele}m)
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="two-col-inputs">
-              <div className="form-group">
-                <label>Góc phương vị (0°–360°)</label>
-                <input
-                  type="number"
-                  min={0}
-                  max={360}
-                  value={azimuthDeg}
-                  onChange={(e) => setAzimuthDeg(e.target.value)}
-                />
-              </div>
-              <div className="form-group">
-                <label>Khoảng cách (mét)</label>
-                <input
-                  type="number"
-                  min={1}
-                  max={15000}
-                  value={distanceM}
-                  onChange={(e) => setDistanceM(e.target.value)}
-                />
-              </div>
-            </div>
-            <button type="button" className="primary-action-btn full-w" onClick={handleProjectBearing}>
-              🚀 Phóng Chiếu Tọa Độ & Khóa Radar
-            </button>
-          </div>
+          <TacticalSightingPanel
+            dataset={dataset}
+            playerLat={playerLat}
+            playerLon={playerLon}
+            compassHeading={compassHeading}
+            pitchDeg={pitchDeg}
+            rollDeg={rollDeg}
+            useRealSensor={useRealSensor}
+            lockedTarget={lockedTarget}
+            userPins={userPins}
+            onToggleRealSensor={onToggleRealSensor}
+            onPinTargets={handlePinTargetsFromSighting}
+          />
         )}
 
         {tab === 'offline' && (

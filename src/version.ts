@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.0.8',
-  buildNumber: 202611161127,
-  builtAt: '2026-11-16T11:27:30+07:00',
-  note: "Thêm Mật Thư Decoder (Caesar 25, Morse, A1Z26, Base64, QR/OCR) & Engineering Toolkit"
+  version: '1.0.9',
+  buildNumber: 202611161417,
+  builtAt: '2026-11-16T14:17:43+07:00',
+  note: "Thêm Giao Hội Tọa Độ (2 Tia / 2 Bán Kính) & Thước Ngắm Camera AR"
 };

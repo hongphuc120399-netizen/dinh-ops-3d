@@ -1512,9 +1512,11 @@ export const App: React.FC = () => {
           initialApkUrl={apkReleaseUrl}
           playerLat={playerLat}
           playerLon={playerLon}
+          compassHeading={compassHeading}
           pitchDeg={pitchDeg}
           rollDeg={rollDeg}
           useRealSensor={useRealCompassSensor || !isSimMode}
+          lockedTarget={lockedTarget}
           onToggleRealSensor={handleToggleRealCompass}
           trackPoints={trackPoints}
           userPins={userPins}

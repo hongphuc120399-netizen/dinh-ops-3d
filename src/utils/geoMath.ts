@@ -714,3 +714,144 @@ ${trkXml}
 function escapeXml(s: string): string {
   return s.replace(/[<>&'"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', "'": '&apos;', '"': '&quot;' }[c] || c));
 }
+
+export interface BearingIntersectionResult {
+  status: 'ok' | 'parallel' | 'diverging';
+  lat: number | null;
+  lon: number | null;
+  dist1M: number;
+  dist2M: number;
+  crossAngleDeg: number;
+  baselineM: number;
+}
+
+/**
+ * Bearing-Bearing Triangulation: Find intersection of two compass sight rays from A(lat1,lon1) and B(lat2,lon2).
+ */
+export function intersectTwoBearings(
+  lat1: number,
+  lon1: number,
+  brng1Deg: number,
+  lat2: number,
+  lon2: number,
+  brng2Deg: number
+): BearingIntersectionResult {
+  const mPerLon = 111319.5 * Math.cos(((lat1 + lat2) / 2) * DEG_TO_RAD);
+  const mPerLat = METERS_PER_DEG_LAT;
+  const dx = (lon2 - lon1) * mPerLon;
+  const dy = (lat2 - lat1) * mPerLat;
+  const baselineM = Math.hypot(dx, dy);
+
+  const b1 = (((brng1Deg % 360) + 360) % 360) * DEG_TO_RAD;
+  const b2 = (((brng2Deg % 360) + 360) % 360) * DEG_TO_RAD;
+  const det = Math.sin(b2 - b1);
+  const crossAngleDeg = Number(((Math.asin(Math.min(1, Math.abs(det))) * 180) / Math.PI).toFixed(1));
+
+  if (Math.abs(det) < 0.04 || baselineM < 0.5) {
+    return {
+      status: 'parallel',
+      lat: null,
+      lon: null,
+      dist1M: 0,
+      dist2M: 0,
+      crossAngleDeg,
+      baselineM
+    };
+  }
+
+  const t1 = (dy * Math.sin(b2) - dx * Math.cos(b2)) / det;
+  const t2 = (dy * Math.sin(b1) - dx * Math.cos(b1)) / det;
+  const ix = t1 * Math.sin(b1);
+  const iy = t1 * Math.cos(b1);
+
+  return {
+    status: t1 >= 0 && t2 >= 0 ? 'ok' : 'diverging',
+    lat: Number((lat1 + iy / mPerLat).toFixed(6)),
+    lon: Number((lon1 + ix / mPerLon).toFixed(6)),
+    dist1M: t1,
+    dist2M: t2,
+    crossAngleDeg,
+    baselineM
+  };
+}
+
+export interface CircleIntersectionResult {
+  status: 'ok' | 'too_far' | 'contained' | 'concentric';
+  p1: { lat: number; lon: number } | null;
+  p2: { lat: number; lon: number } | null;
+  approx: { lat: number; lon: number } | null;
+  baselineM: number;
+}
+
+/**
+ * Range-Range Trilateration: Find intersection points of two distance circles around A and B.
+ */
+export function intersectTwoCircles(
+  lat1: number,
+  lon1: number,
+  r1M: number,
+  lat2: number,
+  lon2: number,
+  r2M: number
+): CircleIntersectionResult {
+  const mPerLon = 111319.5 * Math.cos(((lat1 + lat2) / 2) * DEG_TO_RAD);
+  const mPerLat = METERS_PER_DEG_LAT;
+  const dx = (lon2 - lon1) * mPerLon;
+  const dy = (lat2 - lat1) * mPerLat;
+  const d = Math.hypot(dx, dy);
+
+  if (d < 0.1) {
+    return { status: 'concentric', p1: null, p2: null, approx: null, baselineM: d };
+  }
+
+  if (d > r1M + r2M + 0.01) {
+    const ratio = r1M / Math.max(0.01, r1M + r2M);
+    const ax = dx * ratio;
+    const ay = dy * ratio;
+    return {
+      status: 'too_far',
+      p1: null,
+      p2: null,
+      approx: {
+        lat: Number((lat1 + ay / mPerLat).toFixed(6)),
+        lon: Number((lon1 + ax / mPerLon).toFixed(6))
+      },
+      baselineM: d
+    };
+  }
+
+  if (d < Math.abs(r1M - r2M) - 0.01) {
+    const sign = r1M >= r2M ? 1 : -1;
+    const distAlong = sign * ((r1M + (d - r2M * sign)) / 2);
+    const ax = (dx / d) * distAlong;
+    const ay = (dy / d) * distAlong;
+    return {
+      status: 'contained',
+      p1: null,
+      p2: null,
+      approx: {
+        lat: Number((lat1 + ay / mPerLat).toFixed(6)),
+        lon: Number((lon1 + ax / mPerLon).toFixed(6))
+      },
+      baselineM: d
+    };
+  }
+
+  const a = (r1M * r1M - r2M * r2M + d * d) / (2 * d);
+  const h = Math.sqrt(Math.max(0, r1M * r1M - a * a));
+  const mx = (a / d) * dx;
+  const my = (a / d) * dy;
+  const nx = -dy / d;
+  const ny = dx / d;
+
+  const p1 = {
+    lat: Number((lat1 + (my + h * ny) / mPerLat).toFixed(6)),
+    lon: Number((lon1 + (mx + h * nx) / mPerLon).toFixed(6))
+  };
+  const p2 = {
+    lat: Number((lat1 + (my - h * ny) / mPerLat).toFixed(6)),
+    lon: Number((lon1 + (mx - h * nx) / mPerLon).toFixed(6))
+  };
+
+  return { status: 'ok', p1, p2, approx: p1, baselineM: d };
+}
