@@ -242,7 +242,7 @@ export async function checkGithubOtaUpdate(
   }
 
   const res = await fetchWithTimeout(
-    `https://api.github.com/repos/${repo}/releases?per_page=10`,
+    `https://api.github.com/repos/${repo}/releases?per_page=30`,
     { headers, cache: 'no-store' },
     6500
   );
@@ -260,39 +260,43 @@ export async function checkGithubOtaUpdate(
     if (rel.draft) continue;
     const assets = rel.assets || [];
 
-    if (!apkDownloadUrl) {
-      const apkAsset = assets.find((a) => a.name.toLowerCase().endsWith('.apk'));
-      if (apkAsset) {
+    const apkAsset = assets.find((a) => a.name.toLowerCase().endsWith('.apk'));
+    if (apkAsset) {
+      const candApkVer = rel.tag_name.replace(/^apk-v?/i, '').replace(/^v/i, '');
+      if (!apkVersion || isRemoteNewer(candApkVer, apkVersion)) {
         apkDownloadUrl = apkAsset.browser_download_url;
-        apkVersion = rel.tag_name.replace(/^apk-v?/i, '').replace(/^v/i, '');
+        apkVersion = candApkVer;
       }
     }
 
-    if (!otaUpdate) {
-      const zipAsset = assets.find((a) => a.name === 'dinh-ops-ota-bundle.zip');
-      if (zipAsset) {
-        let remoteVer = rel.tag_name.replace(/^ota-v?/i, '').replace(/^v/i, '');
-        let remoteBuildNum: number | undefined;
-        let builtAt = rel.published_at;
-        let remoteSha256 = normalizeSha256(zipAsset.digest);
-        let rawBody = (rel.body || rel.name || `Phiên bản OTA ${remoteVer}`).trim();
+    const zipAsset = assets.find((a) => a.name === 'dinh-ops-ota-bundle.zip');
+    if (zipAsset) {
+      let remoteVer = rel.tag_name.replace(/^ota-v?/i, '').replace(/^v/i, '');
+      let remoteBuildNum: number | undefined;
+      let builtAt = rel.published_at;
+      let remoteSha256 = normalizeSha256(zipAsset.digest);
+      let rawBody = (rel.body || rel.name || `Phiên bản OTA ${remoteVer}`).trim();
 
-        const metaMatch = rawBody.match(/<!--\s*DINH_OTA:(\{[\s\S]*?\})\s*-->/);
-        if (metaMatch) {
-          try {
-            const parsedMeta = JSON.parse(metaMatch[1]) as Partial<OtaManifest>;
-            if (parsedMeta.version) remoteVer = parsedMeta.version;
-            if (typeof parsedMeta.buildNumber === 'number') remoteBuildNum = parsedMeta.buildNumber;
-            if (parsedMeta.builtAt) builtAt = parsedMeta.builtAt;
-            if (parsedMeta.note) rawBody = parsedMeta.note;
-            const metaSha = normalizeSha256(parsedMeta.sha256);
-            if (metaSha) remoteSha256 = metaSha;
-          } catch {
-            // ignore malformed metadata tag
-          }
-          rawBody = rawBody.replace(/<!--\s*DINH_OTA:[\s\S]*?-->/g, '').trim();
+      const metaMatch = rawBody.match(/<!--\s*DINH_OTA:(\{[\s\S]*?\})\s*-->/);
+      if (metaMatch) {
+        try {
+          const parsedMeta = JSON.parse(metaMatch[1]) as Partial<OtaManifest>;
+          if (parsedMeta.version) remoteVer = parsedMeta.version;
+          if (typeof parsedMeta.buildNumber === 'number') remoteBuildNum = parsedMeta.buildNumber;
+          if (parsedMeta.builtAt) builtAt = parsedMeta.builtAt;
+          if (parsedMeta.note) rawBody = parsedMeta.note;
+          const metaSha = normalizeSha256(parsedMeta.sha256);
+          if (metaSha) remoteSha256 = metaSha;
+        } catch {
+          // ignore malformed metadata tag
         }
+        rawBody = rawBody.replace(/<!--\s*DINH_OTA:[\s\S]*?-->/g, '').trim();
+      }
 
+      if (
+        !otaUpdate ||
+        isRemoteNewer(remoteVer, otaUpdate.version, remoteBuildNum, otaUpdate.buildNumber)
+      ) {
         const cleanNote = (rawBody.split('\n')[0] || `Phiên bản OTA ${remoteVer}`).slice(0, 160);
         otaUpdate = {
           source: 'github',
@@ -313,8 +317,6 @@ export async function checkGithubOtaUpdate(
         };
       }
     }
-
-    if (otaUpdate && apkDownloadUrl) break;
   }
 
   return {
