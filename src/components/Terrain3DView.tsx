@@ -50,6 +50,8 @@ interface Terrain3DViewProps {
   lockedBearing: number | null;
   isSimMode: boolean;
   syntheticLandscape?: boolean;
+  headingUp: boolean;
+  onToggleHeadingUp: () => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -111,7 +113,45 @@ function clearAndDisposeGroup(grp: THREE.Group): void {
   }
 }
 
-function buildProceduralTerrainCanvas(dataset: NuiDinhDataset, mode: 'topo' | 'night'): HTMLCanvasElement {
+function createCardinalSprite(label: string, color: string): {
+  sprite: THREE.Sprite;
+  tex: THREE.CanvasTexture;
+  mat: THREE.SpriteMaterial;
+} {
+  const c = document.createElement('canvas');
+  c.width = 192;
+  c.height = 64;
+  const ctx = c.getContext('2d')!;
+  ctx.fillStyle = 'rgba(7, 11, 18, 0.85)';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  if (typeof ctx.roundRect === 'function') {
+    ctx.roundRect(6, 8, 180, 48, 24);
+  } else {
+    ctx.rect(6, 8, 180, 48);
+  }
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = color;
+  ctx.font = 'bold 24px -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 96, 33);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false });
+  const sprite = new THREE.Sprite(mat);
+  sprite.scale.set(280, 94, 1);
+  return { sprite, tex, mat };
+}
+
+function buildProceduralTerrainCanvas(
+  dataset: NuiDinhDataset,
+  mode: 'tactical' | 'topo' | 'night'
+): HTMLCanvasElement {
   const W = 1536;
   const H = 1536;
   const canvas = document.createElement('canvas');
@@ -151,7 +191,68 @@ function buildProceduralTerrainCanvas(dataset: NuiDinhDataset, mode: 'topo' | 'n
 
       let r = 0, g = 0, b = 0;
 
-      if (mode === 'night') {
+      if (mode === 'tactical') {
+        // High-Contrast Military Gunmetal-Slate-Olive Recon Skin
+        if (ele < 25) {
+          r = 11; g = 18; b = 26;
+        } else if (ele < 110) {
+          const t = (ele - 25) / 85;
+          r = 14 + t * 10;
+          g = 24 + t * 14;
+          b = 32 + t * 6;
+        } else if (ele < 260) {
+          const t = (ele - 110) / 150;
+          r = 24 + t * 14;
+          g = 38 + t * 16;
+          b = 38 + t * 4;
+        } else if (ele < 400) {
+          const t = (ele - 260) / 140;
+          r = 38 + t * 18;
+          g = 54 + t * 16;
+          b = 42 + t * 6;
+        } else {
+          const t = Math.min(1, (ele - 400) / 115);
+          r = 56 + t * 26;
+          g = 70 + t * 22;
+          b = 48 + t * 14;
+        }
+
+        if (slope > 0.62) {
+          const cliffFactor = Math.min(1, (slope - 0.62) * 2.3);
+          r = r * (1 - cliffFactor) + 190 * cliffFactor;
+          g = g * (1 - cliffFactor) + 74 * cliffFactor;
+          b = b * (1 - cliffFactor) + 52 * cliffFactor;
+        }
+
+        r *= shade * 1.06;
+        g *= shade * 1.06;
+        b *= shade * 1.06;
+
+        // Sharp 100m amber primary & 25m cyan secondary contours
+        if (ele > 15) {
+          const mod100 = ele % 100;
+          const mod25 = ele % 25;
+          const tol = Math.max(0.32, slope * 1.55);
+          if (mod100 < tol || 100 - mod100 < tol) {
+            r = r * 0.38 + 255 * 0.62;
+            g = g * 0.38 + 210 * 0.62;
+            b = b * 0.38 + 40 * 0.62;
+          } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
+            r = r * 0.68 + 56 * 0.32;
+            g = g * 0.68 + 189 * 0.32;
+            b = b * 0.68 + 248 * 0.32;
+          }
+        }
+
+        // Subtle 500m tactical crosshair ticks (+)
+        const mx = Math.min(x % 96, 96 - (x % 96));
+        const my = Math.min(y % 96, 96 - (y % 96));
+        if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
+          r += 18;
+          g += 68;
+          b += 72;
+        }
+      } else if (mode === 'night') {
         // Tactical Night Vision Recon Skin
         const norm = Math.min(1, ele / 515);
         r = 6 + norm * 16;
@@ -336,6 +437,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   lockedBearing,
   isSimMode,
   syntheticLandscape = false,
+  headingUp,
+  onToggleHeadingUp,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
@@ -344,6 +447,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 }) => {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const sceneResizeRef = useRef<(() => void) | null>(null);
+  const followPlayerRef = useRef<boolean>(false);
   const [badges, setBadges] = useState<ProjectedBadge[]>([]);
   const [camAzimuthDeg, setCamAzimuthDeg] = useState<number>(0);
   const [inspectedSpot, setInspectedSpot] = useState<{
@@ -377,7 +481,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     userPins,
     lockedTarget,
     isSimMode,
-    syntheticLandscape
+    syntheticLandscape,
+    headingUp
   });
   liveStateRef.current = {
     playerLat,
@@ -393,7 +498,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     userPins,
     lockedTarget,
     isSimMode,
-    syntheticLandscape
+    syntheticLandscape,
+    headingUp
   };
 
   useEffect(() => {
@@ -416,6 +522,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     viewConeMesh: THREE.Mesh;
     courseArrowGroup: THREE.Group;
     inspectMarker: THREE.Mesh;
+    tacticalTexture: THREE.CanvasTexture | null;
     topoTexture: THREE.CanvasTexture | null;
     nightTexture: THREE.CanvasTexture | null;
     satTexture: THREE.CanvasTexture | null;
@@ -490,6 +597,21 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     controls.maxDistance = 11500;
     controls.target.set(0, 320, 150);
 
+    let isUserInteracting = false;
+    const dragStartTarget = new THREE.Vector3();
+    const onCtrlStart = () => {
+      isUserInteracting = true;
+      dragStartTarget.copy(controls.target);
+    };
+    const onCtrlEnd = () => {
+      isUserInteracting = false;
+      if (controls.target.distanceTo(dragStartTarget) > 45) {
+        followPlayerRef.current = false;
+      }
+    };
+    controls.addEventListener('start', onCtrlStart);
+    controls.addEventListener('end', onCtrlEnd);
+
     // Lighting for crisp 3D mountain ridges
     const ambient = new THREE.AmbientLight(0xdbeafe, 1.05);
     scene.add(ambient);
@@ -512,13 +634,13 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     }
     terrainGeo.computeVertexNormals();
 
-    const topoCanvas = buildProceduralTerrainCanvas(dataset, 'topo');
-    const topoTex = new THREE.CanvasTexture(topoCanvas);
-    topoTex.colorSpace = THREE.SRGBColorSpace;
-    topoTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    const tacticalCanvas = buildProceduralTerrainCanvas(dataset, 'tactical');
+    const tacticalTex = new THREE.CanvasTexture(tacticalCanvas);
+    tacticalTex.colorSpace = THREE.SRGBColorSpace;
+    tacticalTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
     const terrainMat = new THREE.MeshStandardMaterial({
-      map: topoTex,
+      map: tacticalTex,
       roughness: 0.88,
       metalness: 0.06
     });
@@ -536,10 +658,24 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const skirtMesh = new THREE.Mesh(plinthGeo, plinthMat);
     scene.add(skirtMesh);
 
-    // Subtle North-South-East-West Cardinal Rim Ring
-    const gridHelper = new THREE.GridHelper(Math.max(widthM, depthM) * 1.15, 24, 0x1e293b, 0x0f172a);
+    // Subtle North-South-East-West Cardinal Rim Ring & Perimeter Sprites
+    const gridHelper = new THREE.GridHelper(Math.max(widthM, depthM) * 1.15, 24, 0x164e63, 0x0f172a);
     gridHelper.position.y = -4;
     scene.add(gridHelper);
+
+    const staticDisposables: { dispose: () => void }[] = [];
+    const cardinalDefs: [string, string, number, number, number][] = [
+      ['B • 000°', '#FF453A', 0, 90, -depthM * 0.54],
+      ['Đ • 090°', '#38BDF8', widthM * 0.54, 90, 0],
+      ['N • 180°', '#94A3B8', 0, 90, depthM * 0.54],
+      ['T • 270°', '#38BDF8', -widthM * 0.54, 90, 0]
+    ];
+    for (const [lbl, col, cx, cy, cz] of cardinalDefs) {
+      const { sprite, tex, mat } = createCardinalSprite(lbl, col);
+      sprite.position.set(cx, cy, cz);
+      scene.add(sprite);
+      staticDisposables.push(tex, mat);
+    }
 
     const overlaysGroup = new THREE.Group();
     const pinsGroup = new THREE.Group();
@@ -547,7 +683,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const targetArcGroup = new THREE.Group();
     scene.add(overlaysGroup, pinsGroup, trackGroup, targetArcGroup);
 
-    // Player 3D Group (Avatar + Compass View Cone + GPS Course Vector)
+    // Player 3D Group (Avatar + 120m Range Ring + Compass View Cone + Laser Sighting Beam + GPS Course Vector)
     const playerGroup = new THREE.Group();
     scene.add(playerGroup);
 
@@ -571,6 +707,21 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const haloMesh = new THREE.Mesh(haloGeo, haloMat);
     haloMesh.position.y = 4;
     playerGroup.add(haloMesh);
+
+    // Tactical 120m Perimeter Range Ring
+    const rangeGeo = new THREE.RingGeometry(118, 122, 48);
+    rangeGeo.rotateX(-Math.PI / 2);
+    const rangeMat = new THREE.MeshBasicMaterial({
+      color: 0x00f5d4,
+      transparent: true,
+      opacity: 0.32,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const rangeMesh = new THREE.Mesh(rangeGeo, rangeMat);
+    rangeMesh.position.y = 5;
+    playerGroup.add(rangeMesh);
+    staticDisposables.push(rangeGeo, rangeMat);
 
     // Vertical Locator Spire so player is always visible behind ridges
     const spireGeo = new THREE.CylinderGeometry(1.5, 4, 110, 8);
@@ -606,6 +757,19 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     });
     const viewConeMesh = new THREE.Mesh(coneGeo, coneMat);
     viewConeMesh.position.y = 8;
+
+    // 380m Laser Sighting Centerline along forward phone axis (-Z)
+    const sightBeamGeo = new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0, 1, 0),
+      new THREE.Vector3(0, 1, -380)
+    ]);
+    const sightBeamMat = new THREE.LineBasicMaterial({
+      color: 0x00f5d4,
+      transparent: true,
+      opacity: 0.78
+    });
+    viewConeMesh.add(new THREE.Line(sightBeamGeo, sightBeamMat));
+    staticDisposables.push(sightBeamGeo, sightBeamMat);
     playerGroup.add(viewConeMesh);
 
     // True GPS Course Arrow (Emerald Green vector arrow!)
@@ -649,7 +813,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       viewConeMesh,
       courseArrowGroup,
       inspectMarker,
-      topoTexture: topoTex,
+      tacticalTexture: tacticalTex,
+      topoTexture: null,
       nightTexture: null,
       satTexture: null
     };
@@ -799,6 +964,35 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         const lookAheadX = playerGroup.position.x + Math.sin(headingRad) * 160;
         const lookAheadZ = playerGroup.position.z - Math.cos(headingRad) * 160;
         controls.target.lerp(new THREE.Vector3(lookAheadX, playerGroup.position.y + 35, lookAheadZ), 0.12);
+      } else if (st.headingUp && !isUserInteracting) {
+        if (followPlayerRef.current) {
+          const dtx = (playerGroup.position.x - controls.target.x) * 0.12;
+          const dty = (playerGroup.position.y + 22 - controls.target.y) * 0.12;
+          const dtz = (playerGroup.position.z - controls.target.z) * 0.12;
+          controls.target.x += dtx;
+          controls.target.y += dty;
+          controls.target.z += dtz;
+          camera.position.x += dtx;
+          camera.position.y += dty;
+          camera.position.z += dtz;
+        }
+
+        const offX = camera.position.x - controls.target.x;
+        const offZ = camera.position.z - controls.target.z;
+        const horizDist = Math.max(80, Math.hypot(offX, offZ));
+        const curAzDeg = ((Math.atan2(-offX, offZ) * 180) / Math.PI + 360) % 360;
+        const deltaAz = ((st.compassHeading - curAzDeg + 540) % 360) - 180;
+        if (Math.abs(deltaAz) > 0.12) {
+          const nextAzRad = ((curAzDeg + deltaAz * 0.18) * Math.PI) / 180;
+          camera.position.x = controls.target.x - Math.sin(nextAzRad) * horizDist;
+          camera.position.z = controls.target.z + Math.cos(nextAzRad) * horizDist;
+        }
+        const camLl = world3DToLatLon(camera.position.x, camera.position.z, dataset.bounds);
+        const groundAtCam =
+          sampleDemElevation(dataset.dem, dataset.bounds, camLl.lat, camLl.lon) * st.verticalScale;
+        if (camera.position.y < groundAtCam + 55) {
+          camera.position.y = groundAtCam + 55;
+        }
       }
 
       controls.update();
@@ -924,17 +1118,23 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       cancelAnimationFrame(rafId);
       sceneResizeRef.current = null;
       ro.disconnect();
+      controls.removeEventListener('start', onCtrlStart);
+      controls.removeEventListener('end', onCtrlEnd);
       renderer.domElement.removeEventListener('pointerdown', onPointerDown);
       renderer.domElement.removeEventListener('pointermove', onPointerMove);
       renderer.domElement.removeEventListener('pointerup', onPointerUp);
       renderer.domElement.removeEventListener('pointercancel', onPointerUp);
       renderer.domElement.removeEventListener('dblclick', onDblClick);
+      for (const d of staticDisposables) {
+        d.dispose();
+      }
       const curCtx = sceneRef.current;
       if (curCtx) {
         clearAndDisposeGroup(curCtx.overlaysGroup);
         clearAndDisposeGroup(curCtx.pinsGroup);
         clearAndDisposeGroup(curCtx.trackGroup);
         clearAndDisposeGroup(curCtx.targetArcGroup);
+        curCtx.tacticalTexture?.dispose();
         curCtx.topoTexture?.dispose();
         curCtx.nightTexture?.dispose();
         curCtx.satTexture?.dispose();
@@ -963,17 +1163,32 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     ctx.terrainMesh.geometry.computeVertexNormals();
   }, [dataset, verticalScale]);
 
-  // 3. Switch 3D Terrain Skin (Topo / Satellite Hybrid / Night Recon)
+  // 3. Switch 3D Terrain Skin (Tactical ATAK / Topo / Satellite Hybrid / Night Recon)
   useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
     let cancelled = false;
 
-    if (skin === 'topo') {
-      if (ctx.topoTexture) {
-        ctx.terrainMesh.material.map = ctx.topoTexture;
-        ctx.terrainMesh.material.needsUpdate = true;
+    if (skin === 'tactical') {
+      if (!ctx.tacticalTexture) {
+        const c = buildProceduralTerrainCanvas(dataset, 'tactical');
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
+        ctx.tacticalTexture = tex;
       }
+      ctx.terrainMesh.material.map = ctx.tacticalTexture;
+      ctx.terrainMesh.material.needsUpdate = true;
+    } else if (skin === 'topo') {
+      if (!ctx.topoTexture) {
+        const c = buildProceduralTerrainCanvas(dataset, 'topo');
+        const tex = new THREE.CanvasTexture(c);
+        tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
+        ctx.topoTexture = tex;
+      }
+      ctx.terrainMesh.material.map = ctx.topoTexture;
+      ctx.terrainMesh.material.needsUpdate = true;
     } else if (skin === 'night') {
       if (!ctx.nightTexture) {
         const c = buildProceduralTerrainCanvas(dataset, 'night');
@@ -1061,7 +1276,13 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     if (showAllTrails) {
       for (const t of dataset.trails) {
         if (t.routes.length > 0) continue; // drawn brighter by routes below
-        addDrapedPolylineClipped(t.coords, skin === 'night' ? '#34D399' : '#E2E8F0', 3.5, 0.45, 40);
+        addDrapedPolylineClipped(
+          t.coords,
+          skin === 'night' ? '#34D399' : skin === 'tactical' ? '#7DD3FC' : '#E2E8F0',
+          3.5,
+          skin === 'tactical' ? 0.38 : 0.45,
+          40
+        );
       }
     }
 
@@ -1295,6 +1516,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
   const focusPlayer3D = useCallback(() => {
     if (!sceneRef.current) return;
+    followPlayerRef.current = true;
     const { camera, controls } = sceneRef.current;
     const [px, py, pz] = latLonToWorld3D(playerLat, playerLon, playerEle, dataset.bounds, verticalScale);
     controls.target.set(px, py + 25, pz);
@@ -1314,8 +1536,25 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     setCamAzimuthDeg(0);
   }, []);
 
+  const prevHeadingUpRef = useRef<boolean>(headingUp);
+  useEffect(() => {
+    if (headingUp) {
+      followPlayerRef.current = true;
+    } else if (prevHeadingUpRef.current) {
+      followPlayerRef.current = false;
+      snapCameraNorth3D();
+    }
+    prevHeadingUpRef.current = headingUp;
+  }, [headingUp, snapCameraNorth3D]);
+
   return (
     <div className="terrain-3d-wrapper" ref={containerRef}>
+      <div className="tactical-hud-corners" aria-hidden="true">
+        <span className="thc tl" />
+        <span className="thc tr" />
+        <span className="thc bl" />
+        <span className="thc br" />
+      </div>
       {/* Projected 3D Interactive Badges */}
       <div className="badges-3d-layer">
         {badges.map((b) => (
@@ -1359,13 +1598,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         <div className="sat-loading-pill">🛰️ Đang phủ ảnh Vệ Tinh Google lên địa hình 3D Núi Dinh...</div>
       )}
 
-      {/* 3D Camera North-Up Indicator + Quick Focus Player Stack */}
+      {/* 3D Camera Heading-Up / North-Up Toggle + Quick Focus Player Stack */}
       <div className="floating-3d-right-stack">
         <button
           type="button"
-          className="cam-north-3d-btn"
-          onClick={snapCameraNorth3D}
-          title="Kim chỉ hướng Bắc của góc nhìn 3D (Bấm để xoay núi 3D về chuẩn hướng Bắc)"
+          className={`cam-north-3d-btn ${headingUp ? 'active' : ''}`}
+          onClick={onToggleHeadingUp}
+          title={
+            headingUp
+              ? 'Đang xoay 3D theo hướng điện thoại (Bấm để khóa về hướng Bắc chuẩn)'
+              : 'Bấm để xoay bản đồ 3D theo hướng điện thoại (Heading-Up)'
+          }
         >
           <svg
             width="16"
@@ -1376,7 +1619,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             <polygon points="12,2 8.5,12 15.5,12" fill="#FF3B30" />
             <polygon points="12,22 8.5,12 15.5,12" fill="#CBD5E1" />
           </svg>
-          <span>Bắc</span>
+          <span>{headingUp ? 'Theo máy' : 'Bắc'}</span>
         </button>
 
         <button

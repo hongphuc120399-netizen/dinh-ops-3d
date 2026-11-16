@@ -165,6 +165,110 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
   );
 };
 
+interface TacticalCompassTapeProps {
+  compassHeading: number;
+  gpsCourse: number | null;
+  lockedTarget: TacticalTarget | null;
+  lockedBearing: number | null;
+  playerLat: number;
+  playerLon: number;
+  headingUp: boolean;
+}
+
+const TAPE_CARDINALS: Record<number, string> = {
+  0: 'B',
+  45: 'ĐB',
+  90: 'Đ',
+  135: 'ĐN',
+  180: 'N',
+  225: 'TN',
+  270: 'T',
+  315: 'TB'
+};
+
+export const TacticalCompassTape: React.FC<TacticalCompassTapeProps> = ({
+  compassHeading,
+  gpsCourse,
+  lockedTarget,
+  lockedBearing,
+  playerLat,
+  playerLon,
+  headingUp
+}) => {
+  const normHeading = ((Math.round(compassHeading) % 360) + 360) % 360;
+  const kMin = Math.floor((compassHeading - 90) / 15);
+  const kMax = Math.ceil((compassHeading + 90) / 15);
+
+  const ticks: { key: number; leftPct: number; label?: string; major: boolean; isNorth: boolean }[] = [];
+  for (let k = kMin; k <= kMax; k++) {
+    const rawDeg = k * 15;
+    const offset = rawDeg - compassHeading;
+    if (offset < -90 || offset > 90) continue;
+    const deg = ((rawDeg % 360) + 360) % 360;
+    const label = TAPE_CARDINALS[deg] ?? (deg % 30 === 0 ? String(deg) : undefined);
+    ticks.push({
+      key: k,
+      leftPct: 50 + (offset / 180) * 100,
+      label,
+      major: deg in TAPE_CARDINALS || deg % 30 === 0,
+      isNorth: deg === 0
+    });
+  }
+
+  const targetLeftPct = useMemo(() => {
+    if (!lockedTarget) return null;
+    const brng = computeBearingDeg(playerLat, playerLon, lockedTarget.lat, lockedTarget.lon);
+    const d = Math.max(-86, Math.min(86, signedAngleDelta(brng, compassHeading)));
+    return 50 + (d / 180) * 100;
+  }, [lockedTarget, playerLat, playerLon, compassHeading]);
+
+  const sightingLeftPct =
+    lockedBearing !== null
+      ? 50 + (Math.max(-86, Math.min(86, signedAngleDelta(lockedBearing, compassHeading))) / 180) * 100
+      : null;
+
+  const courseLeftPct =
+    gpsCourse !== null
+      ? 50 + (Math.max(-86, Math.min(86, signedAngleDelta(gpsCourse, compassHeading))) / 180) * 100
+      : null;
+
+  return (
+    <div
+      className={`tactical-compass-tape ${headingUp ? 'heading-up-on' : ''}`}
+      aria-label={`Phương vị ${normHeading} độ`}
+    >
+      <div className="tape-scale">
+        {ticks.map((t) => (
+          <div
+            key={t.key}
+            className={`tape-tick ${t.major ? 'major' : ''} ${t.isNorth ? 'north' : ''}`}
+            style={{ left: `${t.leftPct}%` }}
+          >
+            <span className="tape-mark" />
+            {t.label && <span className="tape-lbl">{t.label}</span>}
+          </div>
+        ))}
+        {courseLeftPct !== null && (
+          <span className="tape-bug course" style={{ left: `${courseLeftPct}%` }} />
+        )}
+        {sightingLeftPct !== null && (
+          <span className="tape-bug sighting" style={{ left: `${sightingLeftPct}%` }} />
+        )}
+        {targetLeftPct !== null && (
+          <span className="tape-bug target" style={{ left: `${targetLeftPct}%` }}>
+            ◆
+          </span>
+        )}
+      </div>
+      <span className="tape-lubber" />
+      <div className="tape-center-deg">
+        <span>{String(normHeading).padStart(3, '0')}°</span>
+        {headingUp && <span className="tape-hup-tag">H</span>}
+      </div>
+    </div>
+  );
+};
+
 interface TacticalCompassModalProps {
   dataset: NuiDinhDataset;
   playerLat: number;

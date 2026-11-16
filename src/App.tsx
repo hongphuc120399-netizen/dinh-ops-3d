@@ -40,7 +40,11 @@ import {
   QuickPinModal,
   ReconToolkitModal
 } from './components/TacticalPanels';
-import { FloatingCompassWidget, TacticalCompassModal } from './components/CompassSystem';
+import {
+  FloatingCompassWidget,
+  TacticalCompassModal,
+  TacticalCompassTape
+} from './components/CompassSystem';
 
 const dataset = rawDataset as unknown as NuiDinhDataset;
 
@@ -58,10 +62,12 @@ const SIM_PRESETS = [
 export const App: React.FC = () => {
   // View & Layer Controls
   const [viewMode, setViewMode] = useState<ViewMode>('3d');
-  const [skin3D, setSkin3D] = useState<Terrain3DSkin>('topo');
+  const [skin3D, setSkin3D] = useState<Terrain3DSkin>('tactical');
   const [cameraMode, setCameraMode] = useState<Camera3DMode>('orbit');
   const [verticalScale, setVerticalScale] = useState<number>(1.55);
   const [map2DStyle, setMap2DStyle] = useState<Map2DStyle>('google-hybrid');
+  const [headingUp, setHeadingUp] = useState<boolean>(false);
+  const [tacticalTone2D, setTacticalTone2D] = useState<boolean>(true);
   const [showAllTrails, setShowAllTrails] = useState<boolean>(true);
   const [showPois, setShowPois] = useState<boolean>(true);
   const [visibleRoutes, setVisibleRoutes] = useState<Record<string, boolean>>({
@@ -85,6 +91,10 @@ export const App: React.FC = () => {
   const [pitchDeg, setPitchDeg] = useState<number>(0);
   const [rollDeg, setRollDeg] = useState<number>(0);
   const [useRealCompassSensor, setUseRealCompassSensor] = useState<boolean>(false);
+  const smoothHeadingRef = useRef<number>(18);
+  if (!useRealCompassSensor && isSimMode) {
+    smoothHeadingRef.current = compassHeading;
+  }
   const [gpsStatusMsg, setGpsStatusMsg] = useState<string>('Chế độ Giả lập Thực địa');
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
@@ -383,12 +393,22 @@ export const App: React.FC = () => {
       return { pitch: beta, roll: gamma };
     };
 
+    const pushFilteredHeading = (rawDeg: number) => {
+      const prev = smoothHeadingRef.current;
+      const delta = ((rawDeg - prev + 540) % 360) - 180;
+      const next = (prev + delta * 0.28 + 360) % 360;
+      smoothHeadingRef.current = next;
+      if (Math.abs(delta) >= 0.35) {
+        setCompassHeading(Math.round(next * 2) / 2);
+      }
+    };
+
     const handleAbsoluteOrientation = (ev: DeviceOrientationEvent) => {
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.alpha !== null && !Number.isNaN(ev.alpha)) {
         hasAbsolute = true;
         const raw = (360 - ev.alpha + angle) % 360;
-        setCompassHeading(Math.round((raw + 360) % 360));
+        pushFilteredHeading((raw + 360) % 360);
       }
       if (ev.beta !== null || ev.gamma !== null) {
         const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
@@ -407,10 +427,10 @@ export const App: React.FC = () => {
 
       const webkitH = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
       if (typeof webkitH === 'number' && !Number.isNaN(webkitH)) {
-        setCompassHeading(Math.round((((webkitH + angle) % 360) + 360) % 360));
+        pushFilteredHeading((((webkitH + angle) % 360) + 360) % 360);
       } else if (!hasAbsolute && ev.alpha !== null) {
         const raw = (360 - ev.alpha + angle) % 360;
-        setCompassHeading(Math.round((raw + 360) % 360));
+        pushFilteredHeading((raw + 360) % 360);
       }
     };
 
@@ -455,6 +475,21 @@ export const App: React.FC = () => {
     },
     [triggerToast]
   );
+
+  const handleToggleHeadingUp = useCallback(() => {
+    const next = !headingUp;
+    setHeadingUp(next);
+    if (navigator.vibrate) navigator.vibrate(15);
+    if (next) {
+      if (!useRealCompassSensor) {
+        void handleToggleRealCompass(true);
+      } else {
+        triggerToast('🧭 Đang xoay bản đồ theo hướng điện thoại (Heading-Up)');
+      }
+    } else {
+      triggerToast('⬆️ Đã khóa bản đồ chuẩn hướng Bắc');
+    }
+  }, [headingUp, useRealCompassSensor, handleToggleRealCompass, triggerToast]);
 
   // 4. Simulator Walk Engine (Walk along Red Route or toward clicked target!)
   const simDestRef = useRef<{ lat: number; lon: number } | null>(null);
@@ -714,6 +749,18 @@ export const App: React.FC = () => {
             )}
           </div>
 
+          {!zenMode && (
+            <TacticalCompassTape
+              compassHeading={compassHeading}
+              gpsCourse={gpsCourse}
+              lockedTarget={lockedTarget}
+              lockedBearing={lockedBearing}
+              playerLat={playerLat}
+              playerLon={playerLon}
+              headingUp={headingUp}
+            />
+          )}
+
           {/* Right Floating View & Mode Micro-Pill */}
           <div className="hud-controls-pill">
             <div className="view-mode-segmented">
@@ -739,6 +786,19 @@ export const App: React.FC = () => {
                 2D
               </button>
             </div>
+
+            <button
+              type="button"
+              className={`hud-icon-btn ${headingUp ? 'active' : ''}`}
+              onClick={handleToggleHeadingUp}
+              title={
+                headingUp
+                  ? 'Đang xoay bản đồ theo hướng điện thoại (Bấm để khóa về hướng Bắc)'
+                  : 'Bật xoay bản đồ theo hướng điện thoại (Heading-Up)'
+              }
+            >
+              🧭
+            </button>
 
             <button
               type="button"
@@ -883,6 +943,13 @@ export const App: React.FC = () => {
             <div className="chip-row">
               <button
                 type="button"
+                className={skin3D === 'tactical' ? 'active' : ''}
+                onClick={() => setSkin3D('tactical')}
+              >
+                🎯 Chiến Thuật ATAK
+              </button>
+              <button
+                type="button"
                 className={skin3D === 'topo' ? 'active' : ''}
                 onClick={() => setSkin3D('topo')}
               >
@@ -963,6 +1030,13 @@ export const App: React.FC = () => {
                 >
                   Thuần Vector
                 </button>
+                <button
+                  type="button"
+                  className={tacticalTone2D ? 'active' : ''}
+                  onClick={() => setTacticalTone2D((v) => !v)}
+                >
+                  🎯 Lọc màu Chiến thuật
+                </button>
               </div>
             </div>
           )}
@@ -1030,6 +1104,8 @@ export const App: React.FC = () => {
               lockedBearing={lockedBearing}
               isSimMode={isSimMode}
               syntheticLandscape={syntheticLandscape}
+              headingUp={headingUp}
+              onToggleHeadingUp={handleToggleHeadingUp}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);
@@ -1062,6 +1138,9 @@ export const App: React.FC = () => {
               lockedBearing={lockedBearing}
               isSimMode={isSimMode}
               syntheticLandscape={syntheticLandscape}
+              headingUp={headingUp}
+              tacticalTone={tacticalTone2D}
+              onToggleHeadingUp={handleToggleHeadingUp}
               flyToTrigger={flyToTrigger}
               onSelectTarget={(t) => {
                 setLockedTarget(t);
@@ -1075,18 +1154,23 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* LIVE FLOATING 360° COMPASS WIDGET (Hidden in Zen Mode) */}
+      {/* LIVE FLOATING 360° COMPASS WIDGET & WGS84 TACTICAL TAG (Hidden in Zen Mode) */}
       {!zenMode && (
-        <FloatingCompassWidget
-          compassHeading={compassHeading}
-          gpsCourse={gpsCourse}
-          lockedTarget={lockedTarget}
-          lockedBearing={lockedBearing}
-          playerLat={playerLat}
-          playerLon={playerLon}
-          hasMagneticWarning={Boolean(magneticWarningReason)}
-          onOpenFullCompass={() => setShowCompassModal(true)}
-        />
+        <>
+          <div className="tactical-coord-tag" aria-hidden="true">
+            WGS84 • {playerLat.toFixed(5)}N {playerLon.toFixed(5)}E
+          </div>
+          <FloatingCompassWidget
+            compassHeading={compassHeading}
+            gpsCourse={gpsCourse}
+            lockedTarget={lockedTarget}
+            lockedBearing={lockedBearing}
+            playerLat={playerLat}
+            playerLon={playerLon}
+            hasMagneticWarning={Boolean(magneticWarningReason)}
+            onOpenFullCompass={() => setShowCompassModal(true)}
+          />
+        </>
       )}
 
       {/* INTERACTIVE FIELD SIMULATOR CONTROL BAR (For Testing on Web before going to Nui Dinh!) */}

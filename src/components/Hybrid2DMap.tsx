@@ -12,6 +12,7 @@ import type {
 } from '../types';
 import { fetchTileWithCache, getCachedTileBlob } from '../utils/offlineVault';
 import { projectPointByBearing, sampleDemElevation } from '../utils/geoMath';
+import { useContinuousAngle } from './CompassSystem';
 
 interface Hybrid2DMapProps {
   dataset: NuiDinhDataset;
@@ -31,6 +32,9 @@ interface Hybrid2DMapProps {
   lockedBearing: number | null;
   isSimMode: boolean;
   syntheticLandscape?: boolean;
+  headingUp: boolean;
+  tacticalTone: boolean;
+  onToggleHeadingUp: () => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
   onSelectTarget: (target: TacticalTarget) => void;
   onSelectUserPin: (pin: UserPin) => void;
@@ -162,22 +166,35 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   lockedBearing,
   isSimMode,
   syntheticLandscape = false,
+  headingUp,
+  tacticalTone,
+  onToggleHeadingUp,
   flyToTrigger,
   onSelectTarget,
   onSelectUserPin,
   onRequestPinAt,
   onSimMoveTo
 }) => {
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
   const divRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<L.Map | null>(null);
+  const [rotSize, setRotSize] = React.useState<number>(640);
   const syntheticLandscapeRef = useRef<boolean>(syntheticLandscape);
   syntheticLandscapeRef.current = syntheticLandscape;
+  const headingUpRef = useRef<boolean>(headingUp);
+  headingUpRef.current = headingUp;
+  const bearingRef = useRef<number>(headingUp ? compassHeading : 0);
+  bearingRef.current = headingUp ? compassHeading : 0;
+  const follow2DRef = useRef<boolean>(headingUp);
+  const smoothBearing = useContinuousAngle(headingUp ? compassHeading : 0);
   const baseLayerRef = useRef<L.GridLayer | null>(null);
   const vectorsGroupRef = useRef<L.LayerGroup | null>(null);
   const pinsGroupRef = useRef<L.LayerGroup | null>(null);
   const trackLineRef = useRef<L.Polyline | null>(null);
   const targetLineRef = useRef<L.Polyline | null>(null);
   const sightingLineRef = useRef<L.Polyline | null>(null);
+  const headingRayRef = useRef<L.Polyline | null>(null);
+  const rangeRingRef = useRef<L.Circle | null>(null);
   const playerMarkerRef = useRef<L.Marker | null>(null);
   const accuracyCircleRef = useRef<L.Circle | null>(null);
 
@@ -186,7 +203,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
 
   // 1. Initialize Leaflet Map
   useEffect(() => {
-    if (!divRef.current) return;
+    if (!divRef.current || !wrapperRef.current) return;
     const map = L.map(divRef.current, {
       center: [dataset.center[0], dataset.center[1]],
       zoom: 14,
@@ -196,12 +213,30 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       attributionControl: false
     });
 
-    // Remap Leaflet touch, drag, pinch-zoom & tap coords when Pure-OTA Synthetic Landscape (+90deg) is active
+    // Combined screen-to-Leaflet host transform supporting Pure-OTA Synthetic Landscape (+90deg) + Heading-Up (-bearing)
+    const clientToHostPoint = (clientX: number, clientY: number): L.Point => {
+      const wrapper = wrapperRef.current;
+      const host = divRef.current;
+      if (!wrapper || !host) return L.point(clientX, clientY);
+      const wRect = wrapper.getBoundingClientRect();
+      const wW = wrapper.clientWidth || wRect.width;
+      const wH = wrapper.clientHeight || wRect.height;
+      const localWx = syntheticLandscapeRef.current ? clientY - wRect.top : clientX - wRect.left;
+      const localWy = syntheticLandscapeRef.current ? wRect.right - clientX : clientY - wRect.top;
+      const cx = localWx - wW * 0.5;
+      const cy = localWy - wH * 0.5;
+      const rad = (bearingRef.current * Math.PI) / 180;
+      const cosA = Math.cos(rad);
+      const sinA = Math.sin(rad);
+      const rx = cx * cosA - cy * sinA;
+      const ry = cx * sinA + cy * cosA;
+      return L.point(host.clientWidth * 0.5 + rx, host.clientHeight * 0.5 + ry);
+    };
+
     const origMouseEventToContainerPoint = map.mouseEventToContainerPoint.bind(map);
     map.mouseEventToContainerPoint = (ev: MouseEvent) => {
-      if (syntheticLandscapeRef.current && divRef.current) {
-        const rect = divRef.current.getBoundingClientRect();
-        return L.point(ev.clientY - rect.top, rect.right - ev.clientX);
+      if (syntheticLandscapeRef.current || headingUpRef.current) {
+        return clientToHostPoint(ev.clientX, ev.clientY);
       }
       return origMouseEventToContainerPoint(ev);
     };
@@ -217,21 +252,30 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       map.dragging.disable();
       const origOnDown = drag._onDown;
       const origOnMove = drag._onMove;
-      let rawStart: { x: number; y: number } | null = null;
+      let startHostPt: L.Point | null = null;
       drag._onDown = function (e) {
         const first = e.touches ? e.touches[0] : e;
-        if (first) rawStart = { x: first.clientX, y: first.clientY };
+        if (first) startHostPt = clientToHostPoint(first.clientX, first.clientY);
         origOnDown.call(this, e);
-        if (syntheticLandscapeRef.current) {
+        if (syntheticLandscapeRef.current || headingUpRef.current) {
           this._parentScale = { x: 1, y: 1 };
         }
       };
       drag._onMove = function (e) {
         const first = e.touches && e.touches.length === 1 ? e.touches[0] : e;
-        if (syntheticLandscapeRef.current && rawStart && first && (!e.touches || e.touches.length === 1)) {
-          const dxRaw = first.clientX - rawStart.x;
-          const dyRaw = first.clientY - rawStart.y;
-          this._startPoint = L.point(first.clientX - dyRaw, first.clientY + dxRaw);
+        if (
+          (syntheticLandscapeRef.current || headingUpRef.current) &&
+          startHostPt &&
+          first &&
+          (!e.touches || e.touches.length === 1)
+        ) {
+          const curHostPt = clientToHostPoint(first.clientX, first.clientY);
+          const dx = curHostPt.x - startHostPt.x;
+          const dy = curHostPt.y - startHostPt.y;
+          if (Math.abs(dx) + Math.abs(dy) > 10) {
+            follow2DRef.current = false;
+          }
+          this._startPoint = L.point(first.clientX - dx, first.clientY - dy);
           this._parentScale = { x: 1, y: 1 };
         }
         origOnMove.call(this, e);
@@ -260,6 +304,24 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       weight: 2.6,
       dashArray: '6, 6',
       opacity: 0.9
+    }).addTo(map);
+
+    const headingRay = L.polyline([], {
+      color: '#00F5D4',
+      weight: 1.5,
+      dashArray: '3, 6',
+      opacity: 0.72,
+      interactive: false
+    }).addTo(map);
+
+    const rangeRing = L.circle([playerLat, playerLon], {
+      radius: 150,
+      color: '#00F5D4',
+      weight: 1,
+      dashArray: '4, 6',
+      fillOpacity: 0,
+      opacity: 0.55,
+      interactive: false
     }).addTo(map);
 
     const accCircle = L.circle([playerLat, playerLon], {
@@ -315,15 +377,29 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     trackLineRef.current = trackLine;
     targetLineRef.current = targetLine;
     sightingLineRef.current = sightingLine;
+    headingRayRef.current = headingRay;
+    rangeRingRef.current = rangeRing;
     playerMarkerRef.current = playerMarker;
     accuracyCircleRef.current = accCircle;
 
+    const roWrap = new ResizeObserver(() => {
+      const w = wrapperRef.current?.clientWidth || 0;
+      const h = wrapperRef.current?.clientHeight || 0;
+      if (w > 0 && h > 0) {
+        const needed = Math.max(320, Math.ceil(Math.hypot(w, h)) + 28);
+        setRotSize((prev) => (prev === needed ? prev : needed));
+      }
+      map.invalidateSize({ pan: false });
+    });
+    roWrap.observe(wrapperRef.current);
+
     const ro = new ResizeObserver(() => {
-      map.invalidateSize();
+      map.invalidateSize({ pan: false });
     });
     ro.observe(divRef.current);
 
     return () => {
+      roWrap.disconnect();
       ro.disconnect();
       map.remove();
       mapRef.current = null;
@@ -486,6 +562,15 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     playerMarkerRef.current.setLatLng([playerLat, playerLon]);
     accuracyCircleRef.current.setLatLng([playerLat, playerLon]);
     accuracyCircleRef.current.setRadius(Math.max(5, playerAccuracy || 8));
+    rangeRingRef.current?.setLatLng([playerLat, playerLon]);
+
+    if (headingRayRef.current) {
+      const rayEnd = projectPointByBearing(playerLat, playerLon, compassHeading, 350);
+      headingRayRef.current.setLatLngs([
+        [playerLat, playerLon],
+        [rayEnd.lat, rayEnd.lon]
+      ]);
+    }
 
     const courseSvg =
       gpsCourse !== null
@@ -503,10 +588,11 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         html: `
           <svg width="84" height="84" viewBox="0 0 84 84">
             <g transform="rotate(${compassHeading} 42 42)">
-              <path d="M42 42 L20 6 A42 42 0 0 1 64 6 Z" fill="rgba(56,189,248,0.32)" stroke="rgba(56,189,248,0.6)" stroke-width="1"/>
+              <path d="M42 42 L20 6 A42 42 0 0 1 64 6 Z" fill="rgba(0,245,212,0.24)" stroke="rgba(0,245,212,0.65)" stroke-width="1"/>
+              <polygon points="42,27 33,49 42,43 51,49" fill="#00F5D4" stroke="#061018" stroke-width="2" stroke-linejoin="round" />
             </g>
             ${courseSvg}
-            <circle cx="42" cy="42" r="9" fill="#00F5D4" stroke="#080B10" stroke-width="3" />
+            <circle cx="42" cy="42" r="4.5" fill="#F8FAFC" stroke="#080B10" stroke-width="2" />
           </svg>
         `
       })
@@ -536,6 +622,9 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         sightingLineRef.current.setLatLngs([]);
       }
     }
+    if (headingUpRef.current && follow2DRef.current) {
+      mapRef.current?.panTo([playerLat, playerLon], { animate: false });
+    }
   }, [playerLat, playerLon, playerAccuracy, compassHeading, gpsCourse, trackPoints, lockedTarget, lockedBearing]);
 
   // 6. FlyTo Sync
@@ -544,19 +633,61 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     mapRef.current.flyTo([flyToTrigger.lat, flyToTrigger.lon], flyToTrigger.zoom ?? 16, { duration: 0.7 });
   }, [flyToTrigger]);
 
-  // 7. Re-measure Leaflet viewport immediately when Pure-OTA Synthetic Landscape toggles
+  // 7a. Snap & follow player center whenever Heading-Up toggles on
   useEffect(() => {
-    const raf = requestAnimationFrame(() => mapRef.current?.invalidateSize());
+    if (headingUp) {
+      follow2DRef.current = true;
+      mapRef.current?.panTo([playerLat, playerLon], { animate: false });
+    } else {
+      follow2DRef.current = false;
+    }
+  }, [headingUp]);
+
+  // 7b. Re-measure Leaflet viewport whenever container sizing changes
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => mapRef.current?.invalidateSize({ pan: false }));
     return () => cancelAnimationFrame(raf);
-  }, [syntheticLandscape]);
+  }, [syntheticLandscape, headingUp, rotSize]);
 
   return (
-    <div className="map-2d-wrapper">
-      <div ref={divRef} className="leaflet-host" />
+    <div ref={wrapperRef} className={`map-2d-wrapper ${tacticalTone ? 'tactical-tone' : ''}`}>
+      <div
+        ref={divRef}
+        className={`leaflet-host ${headingUp ? 'is-rotated' : ''}`}
+        style={
+          {
+            ...(headingUp
+              ? {
+                  width: `${rotSize}px`,
+                  height: `${rotSize}px`,
+                  transform: `translate(-50%, -50%) rotate(${-smoothBearing}deg)`
+                }
+              : {}),
+            '--map-counter-rot': `${headingUp ? Math.round(smoothBearing) : 0}deg`
+          } as React.CSSProperties
+        }
+      />
+      <div className="tactical-hud-corners" aria-hidden="true">
+        <span className="thc tl" />
+        <span className="thc tr" />
+        <span className="thc bl" />
+        <span className="thc br" />
+      </div>
       <div className="map-2d-floating-controls">
         <button
           type="button"
-          onClick={() => mapRef.current?.flyTo([playerLat, playerLon], 16, { duration: 0.5 })}
+          className={headingUp ? 'active' : ''}
+          onClick={onToggleHeadingUp}
+          title={headingUp ? 'Đang xoay bản đồ 2D theo điện thoại' : 'Bật xoay bản đồ 2D theo hướng điện thoại'}
+        >
+          {headingUp ? '🧭 Theo máy' : '⬆️ Bắc'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            follow2DRef.current = true;
+            mapRef.current?.flyTo([playerLat, playerLon], 16, { duration: 0.5 });
+          }}
           title="Đưa bản đồ về vị trí của tôi"
         >
           🎯 Tôi

@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.0.3',
-  buildNumber: 202611160806,
-  builtAt: '2026-11-16T08:06:11+07:00',
-  note: "Sửa lỗi bắt buộc SHA-256 Checksum khi tải OTA trên Android + Mặc định nằm ngang"
+  version: '1.0.4',
+  buildNumber: 202611160846,
+  builtAt: '2026-11-16T08:46:01+07:00',
+  note: "Xoay bản đồ 3D/2D theo hướng điện thoại (Heading-Up) + Giao diện Chiến thuật ATAK"
 };

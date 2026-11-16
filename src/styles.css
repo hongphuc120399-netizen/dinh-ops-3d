@@ -87,11 +87,120 @@ button:active {
   border-radius: 999px;
   background: var(--glass-heavy);
   backdrop-filter: blur(18px) saturate(175%);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(0, 245, 212, 0.22);
+  box-shadow: inset 0 1px 0 rgba(0, 245, 212, 0.14), 0 4px 16px rgba(0, 0, 0, 0.48);
   font-size: 0.69rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+/* SLIDING 360° TACTICAL COMPASS TAPE (24px micro strip, pointer-events: none) */
+.tactical-compass-tape {
+  position: relative;
+  flex: 0 1 188px;
+  min-width: 100px;
+  max-width: 220px;
+  height: 24px;
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.74);
+  backdrop-filter: blur(14px);
+  border: 1px solid rgba(0, 245, 212, 0.26);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.42);
+  overflow: hidden;
+  pointer-events: none;
+  font-variant-numeric: tabular-nums;
+}
+.tactical-compass-tape.heading-up-on {
+  border-color: rgba(0, 245, 212, 0.68);
+  box-shadow: 0 0 12px rgba(0, 245, 212, 0.28);
+}
+.tape-scale {
+  position: absolute;
+  inset: 0;
+}
+.tape-tick {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.tape-mark {
+  width: 1px;
+  height: 4px;
+  background: rgba(148, 163, 184, 0.5);
+}
+.tape-tick.major .tape-mark {
+  height: 6px;
+  width: 1.5px;
+  background: rgba(226, 232, 240, 0.85);
+}
+.tape-tick.north .tape-mark {
+  background: #ff453a;
+}
+.tape-lbl {
+  font-size: 0.53rem;
+  font-weight: 800;
+  line-height: 1.1;
+  color: rgba(203, 213, 225, 0.88);
+}
+.tape-tick.north .tape-lbl {
+  color: #ff453a;
+}
+.tape-bug {
+  position: absolute;
+  bottom: 1px;
+  transform: translateX(-50%);
+  line-height: 1;
+}
+.tape-bug.course {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-emerald);
+}
+.tape-bug.sighting {
+  width: 4px;
+  height: 7px;
+  border-radius: 2px;
+  background: var(--accent-cyan);
+}
+.tape-bug.target {
+  font-size: 0.62rem;
+  color: var(--accent-gold);
+  text-shadow: 0 0 6px rgba(255, 214, 10, 0.75);
+}
+.tape-lubber {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  border-left: 4px solid transparent;
+  border-right: 4px solid transparent;
+  border-top: 5px solid var(--accent-cyan);
+}
+.tape-center-deg {
+  position: absolute;
+  left: 50%;
+  bottom: 1px;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.92);
+  border: 1px solid rgba(0, 245, 212, 0.4);
+  font-size: 0.59rem;
+  font-weight: 800;
+  color: #ecfeff;
+  line-height: 1.25;
+}
+.tape-hup-tag {
+  font-size: 0.5rem;
+  font-weight: 900;
+  color: var(--accent-cyan);
 }
 
 .pulse-dot {
@@ -466,7 +575,8 @@ button:active {
 
 @media (max-width: 580px) {
   .hide-narrow,
-  .hide-narrow-txt {
+  .hide-narrow-txt,
+  .tactical-compass-tape {
     display: none;
   }
 }
@@ -547,6 +657,12 @@ button:active {
   font-size: 0.68rem;
   font-weight: 700;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+.cam-north-3d-btn.active {
+  background: rgba(0, 245, 212, 0.22);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  box-shadow: 0 0 14px rgba(0, 245, 212, 0.35);
 }
 
 .floating-recenter-btn {
@@ -637,12 +753,62 @@ button:active {
   border-color: rgba(48, 209, 88, 0.5);
 }
 
-/* 2D LEAFLET MAP */
-.map-2d-wrapper,
+/* 2D LEAFLET MAP & TACTICAL RETICLE OVERLAY */
+.map-2d-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #0b1118;
+}
 .leaflet-host {
   width: 100%;
   height: 100%;
   background: #0b1118;
+}
+.leaflet-host.is-rotated {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform-origin: center center;
+  will-change: transform;
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.map-2d-wrapper.tactical-tone .leaflet-tile-pane {
+  filter: contrast(1.08) saturate(0.82) brightness(0.86);
+}
+.tactical-hud-corners {
+  position: absolute;
+  inset: 5px;
+  z-index: 420;
+  pointer-events: none;
+}
+.tactical-hud-corners .thc {
+  position: absolute;
+  width: 11px;
+  height: 11px;
+  border-color: rgba(0, 245, 212, 0.42);
+  border-style: solid;
+}
+.tactical-hud-corners .thc.tl {
+  top: 0;
+  left: 0;
+  border-width: 1.5px 0 0 1.5px;
+}
+.tactical-hud-corners .thc.tr {
+  top: 0;
+  right: 0;
+  border-width: 1.5px 1.5px 0 0;
+}
+.tactical-hud-corners .thc.bl {
+  bottom: 0;
+  left: 0;
+  border-width: 0 0 1.5px 1.5px;
+}
+.tactical-hud-corners .thc.br {
+  bottom: 0;
+  right: 0;
+  border-width: 0 1.5px 1.5px 0;
 }
 .map-2d-floating-controls {
   position: absolute;
@@ -666,6 +832,12 @@ button:active {
   color: #fff;
   text-decoration: none;
 }
+.map-2d-floating-controls button.active {
+  background: rgba(0, 245, 212, 0.22);
+  border-color: var(--accent-cyan);
+  color: var(--accent-cyan);
+  box-shadow: 0 0 14px rgba(0, 245, 212, 0.35);
+}
 
 .poi-dot {
   width: 20px;
@@ -677,6 +849,8 @@ button:active {
   align-items: center;
   justify-content: center;
   font-size: 11px;
+  transform: rotate(var(--map-counter-rot, 0deg));
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .upin-bubble {
@@ -690,6 +864,8 @@ button:active {
   color: #fff;
   font-size: 11px;
   white-space: nowrap;
+  transform: rotate(var(--map-counter-rot, 0deg));
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 .upin-bubble.locked {
   border-color: var(--accent-gold);
@@ -1453,6 +1629,23 @@ select {
 }
 
 /* LIVE FLOATING 360° COMPASS WIDGET & FULL TACTICAL COMPASS MODAL */
+.tactical-coord-tag {
+  position: absolute;
+  left: max(8px, env(safe-area-inset-left));
+  bottom: 66px;
+  z-index: 555;
+  pointer-events: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(7, 11, 18, 0.72);
+  border: 1px solid rgba(56, 189, 248, 0.28);
+  color: rgba(186, 230, 253, 0.86);
+  font-size: 0.55rem;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .floating-compass-widget {
   position: absolute;
   left: max(8px, env(safe-area-inset-left));
@@ -1966,6 +2159,9 @@ select {
   .map-2d-floating-controls {
     bottom: 48px;
   }
+  .tactical-coord-tag {
+    bottom: 108px;
+  }
 }
 
 @media (max-height: 540px) {
@@ -2023,6 +2219,13 @@ select {
 .app-shell.synthetic-landscape .floating-compass-widget {
   left: max(8px, env(safe-area-inset-top));
   bottom: 6px;
+}
+.app-shell.synthetic-landscape .tactical-coord-tag {
+  left: max(8px, env(safe-area-inset-top));
+  bottom: 66px;
+}
+.app-shell.synthetic-landscape .tactical-compass-tape {
+  display: block;
 }
 .app-shell.synthetic-landscape .floating-3d-right-stack,
 .app-shell.synthetic-landscape .map-2d-floating-controls {
@@ -2121,6 +2324,12 @@ select {
   .tactical-sheet {
     transition: opacity 150ms ease !important;
     transform: none !important;
+  }
+  .tactical-compass-tape,
+  .leaflet-host.is-rotated,
+  .poi-dot,
+  .upin-bubble {
+    transition: none !important;
   }
 }
 
