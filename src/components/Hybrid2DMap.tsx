@@ -6,6 +6,7 @@ import type {
   Map2DStyle,
   NuiDinhDataset,
   PinCategory,
+  TacticalPalette,
   TacticalTarget,
   TrackPoint,
   UserPin
@@ -13,6 +14,7 @@ import type {
 import { fetchTileWithCache, getCachedTileBlob } from '../utils/offlineVault';
 import { projectPointByBearing, sampleDemElevation } from '../utils/geoMath';
 import { useContinuousAngle } from './CompassSystem';
+import { getMapOverlayPalette, resolveRouteColor } from './Terrain3DView';
 
 interface Hybrid2DMapProps {
   dataset: NuiDinhDataset;
@@ -34,6 +36,7 @@ interface Hybrid2DMapProps {
   syntheticLandscape?: boolean;
   headingUp: boolean;
   tacticalTone: boolean;
+  palette?: TacticalPalette;
   onToggleHeadingUp: () => void;
   onMapInteractionChange?: (active: boolean) => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
@@ -169,6 +172,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   syntheticLandscape = false,
   headingUp,
   tacticalTone,
+  palette = 'slate',
   onToggleHeadingUp,
   onMapInteractionChange,
   flyToTrigger,
@@ -435,15 +439,23 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     if (!grp) return;
     grp.clearLayers();
 
+    const ov = getMapOverlayPalette(palette);
+
     // Hazard Polygons (Military Shooting Range & Deep Quarries)
     for (const h of dataset.hazards) {
-      const col = h.kind === 'military' ? '#FF2D55' : '#FF9F0A';
+      const col =
+        palette === 'vivid'
+          ? h.kind === 'military'
+            ? ov.hazardHex
+            : ov.hazardQuarryHex
+          : ov.hazardHex;
       L.polygon(h.coords, {
         color: col,
-        weight: 2.5,
+        weight: palette === 'vivid' ? 2.5 : 1.8,
         dashArray: '6, 4',
         fillColor: col,
-        fillOpacity: 0.24
+        fillOpacity: ov.hazardWallOpacity,
+        opacity: ov.hazardLineOpacity
       })
         .bindTooltip(`⛔ ${h.name}`, { sticky: true })
         .addTo(grp);
@@ -451,17 +463,17 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
 
     // Streams
     for (const s of dataset.streams) {
-      L.polyline(s.coords, { color: '#38BDF8', weight: 2, opacity: 0.75 }).addTo(grp);
+      L.polyline(s.coords, { color: ov.stream, weight: 2, opacity: ov.streamOpacity }).addTo(grp);
     }
 
-    // 220kV High-Voltage Powerline Corridor (Magnetic Compass Drift Corridor)
+    // 220kV High-Voltage Powerline Corridor
     if (dataset.powerlines) {
       for (const pl of dataset.powerlines) {
         L.polyline(pl.coords, {
-          color: '#C084FC',
+          color: ov.power,
           weight: 2,
           dashArray: '6, 5',
-          opacity: 0.72
+          opacity: ov.powerOpacity
         })
           .bindTooltip(`⚡ ${pl.name} (Chú ý nhiễu từ kế la bàn)`, { sticky: true })
           .addTo(grp);
@@ -473,10 +485,10 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       for (const tr of dataset.trails) {
         if (tr.routes.length > 0) continue;
         L.polyline(tr.coords, {
-          color: '#F8FAFC',
-          weight: 1.8,
+          color: ov.trail2D,
+          weight: 1.6,
           dashArray: '4, 4',
-          opacity: 0.65
+          opacity: ov.trail2DOpacity
         }).addTo(grp);
       }
     }
@@ -484,11 +496,12 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     // 4 Official Color Routes
     for (const r of dataset.routes) {
       if (visibleRoutes[r.id] === false) continue;
+      const routeCol = resolveRouteColor(r.id, r.color, palette);
       for (const seg of r.segments) {
         L.polyline(seg, {
-          color: r.color,
-          weight: 4.2,
-          opacity: 0.95
+          color: routeCol,
+          weight: 3.6,
+          opacity: palette === 'vivid' ? 0.92 : 0.85
         })
           .bindTooltip(r.label, { sticky: true })
           .addTo(grp);
@@ -542,7 +555,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         marker.addTo(grp);
       }
     }
-  }, [dataset, visibleRoutes, showAllTrails, showPois, importedGpx, onSelectTarget]);
+  }, [dataset, visibleRoutes, showAllTrails, showPois, importedGpx, palette, onSelectTarget]);
 
   // 4. Render User Dropped Pins ("Cục đá / 💩")
   useEffect(() => {
@@ -570,10 +583,16 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
   // 5. Update Player Position, Dual-Heading Cone, Tracklog & Target Line
   useEffect(() => {
     if (!playerMarkerRef.current || !accuracyCircleRef.current) return;
+    const ov = getMapOverlayPalette(palette);
     playerMarkerRef.current.setLatLng([playerLat, playerLon]);
     accuracyCircleRef.current.setLatLng([playerLat, playerLon]);
     accuracyCircleRef.current.setRadius(Math.max(5, playerAccuracy || 8));
+    accuracyCircleRef.current.setStyle({ color: ov.primaryHex, fillColor: ov.primaryHex });
     rangeRingRef.current?.setLatLng([playerLat, playerLon]);
+    rangeRingRef.current?.setStyle({ color: ov.primaryHex });
+    trackLineRef.current?.setStyle({ color: ov.primaryHex });
+    sightingLineRef.current?.setStyle({ color: ov.primaryHex });
+    headingRayRef.current?.setStyle({ color: ov.primaryHex });
 
     if (headingRayRef.current) {
       const rayEnd = projectPointByBearing(playerLat, playerLon, compassHeading, 350);
@@ -586,8 +605,8 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     const courseSvg =
       gpsCourse !== null
         ? `<g transform="rotate(${gpsCourse} 42 42)">
-             <line x1="42" y1="42" x2="42" y2="8" stroke="#30D158" stroke-width="3.2" stroke-linecap="round" />
-             <polygon points="42,3 36,13 48,13" fill="#30D158" />
+             <line x1="42" y1="42" x2="42" y2="8" stroke="${ov.arrowHex}" stroke-width="3.2" stroke-linecap="round" />
+             <polygon points="42,3 36,13 48,13" fill="${ov.arrowHex}" />
            </g>`
         : '';
 
@@ -599,8 +618,8 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         html: `
           <svg width="84" height="84" viewBox="0 0 84 84">
             <g transform="rotate(${compassHeading} 42 42)">
-              <path d="M42 42 L20 6 A42 42 0 0 1 64 6 Z" fill="rgba(0,245,212,0.24)" stroke="rgba(0,245,212,0.65)" stroke-width="1"/>
-              <polygon points="42,27 33,49 42,43 51,49" fill="#00F5D4" stroke="#061018" stroke-width="2" stroke-linejoin="round" />
+              <path d="M42 42 L20 6 A42 42 0 0 1 64 6 Z" fill="rgba(148,163,184,0.18)" stroke="${ov.primaryHex}" stroke-opacity="0.55" stroke-width="1"/>
+              <polygon points="42,27 33,49 42,43 51,49" fill="${ov.primaryHex}" stroke="#061018" stroke-width="2" stroke-linejoin="round" />
             </g>
             ${courseSvg}
             <circle cx="42" cy="42" r="4.5" fill="#F8FAFC" stroke="#080B10" stroke-width="2" />
@@ -636,7 +655,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     if (headingUpRef.current && follow2DRef.current) {
       mapRef.current?.panTo([playerLat, playerLon], { animate: false });
     }
-  }, [playerLat, playerLon, playerAccuracy, compassHeading, gpsCourse, trackPoints, lockedTarget, lockedBearing]);
+  }, [playerLat, playerLon, playerAccuracy, compassHeading, gpsCourse, trackPoints, lockedTarget, lockedBearing, palette]);
 
   // 6. FlyTo Sync
   useEffect(() => {

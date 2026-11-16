@@ -1,17 +1,52 @@
 :root {
-  --bg-obsidian: #070a0f;
-  --glass-heavy: rgba(12, 17, 25, 0.82);
-  --glass-medium: rgba(18, 25, 36, 0.72);
-  --glass-border: rgba(255, 255, 255, 0.13);
-  --text-primary: #f8fafc;
+  --bg-obsidian: #07090d;
+  --glass-heavy: rgba(9, 12, 17, 0.88);
+  --glass-medium: rgba(14, 18, 25, 0.78);
+  --glass-border: rgba(148, 163, 184, 0.16);
+  --text-primary: #e2e8f0;
   --text-secondary: #94a3b8;
-  --accent-cyan: #00f5d4;
+  --accent-cyan: #94a3b8;
+  --accent-hud: #cbd5e1;
+  --accent-border: rgba(148, 163, 184, 0.24);
+  --accent-surface: rgba(148, 163, 184, 0.14);
+  --accent-blue: #7b93ab;
+  --accent-gold: #c8a25a;
+  --accent-orange: #b87e52;
+  --accent-emerald: #7d9e85;
+  --accent-danger: #b85c56;
+  font: 100%/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+}
+
+.app-shell[data-palette='olive'] {
+  --accent-cyan: #9ab096;
+  --accent-hud: #c3d3bf;
+  --accent-border: rgba(154, 176, 150, 0.26);
+  --accent-surface: rgba(154, 176, 150, 0.14);
+  --accent-blue: #7f9c92;
+  --accent-gold: #b8ac78;
+  --accent-emerald: #84a67d;
+}
+
+.app-shell[data-palette='amber'] {
+  --accent-cyan: #d49b54;
+  --accent-hud: #e5be8a;
+  --accent-border: rgba(212, 155, 84, 0.26);
+  --accent-surface: rgba(212, 155, 84, 0.14);
+  --accent-blue: #c28e4e;
+  --accent-gold: #d49b54;
+  --accent-emerald: #b58d58;
+}
+
+.app-shell[data-palette='vivid'] {
+  --accent-cyan: #5eead4;
+  --accent-hud: #99f6e4;
+  --accent-border: rgba(94, 234, 212, 0.34);
+  --accent-surface: rgba(94, 234, 212, 0.16);
   --accent-blue: #38bdf8;
   --accent-gold: #ffd60a;
   --accent-orange: #ff9f0a;
-  --accent-emerald: #30d158;
-  --accent-danger: #ff3b30;
-  font: 100%/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, system-ui, sans-serif;
+  --accent-emerald: #4ade80;
+  --accent-danger: #ef4444;
 }
 
 * {
@@ -107,12 +142,10 @@ button:active {
   height: 26px;
   padding: 0 7px;
   border-radius: 5px;
-  background: rgba(4, 9, 15, 0.86);
-  backdrop-filter: blur(18px) saturate(165%);
-  border: 1px solid rgba(0, 245, 212, 0.3);
-  box-shadow:
-    inset 0 1px 0 rgba(0, 245, 212, 0.26),
-    0 4px 16px rgba(0, 0, 0, 0.6);
+  background: rgba(8, 11, 15, 0.9);
+  backdrop-filter: blur(18px) saturate(130%);
+  border: 1px solid var(--accent-border);
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.58);
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
   font-size: 0.64rem;
   letter-spacing: 0.02em;
@@ -122,12 +155,12 @@ button:active {
 
 .tactical-clock-chip {
   font-weight: 800;
-  color: #e0f2fe;
+  color: var(--accent-hud);
   letter-spacing: 0.05em;
   padding: 1px 4px;
   border-radius: 3px;
-  background: rgba(0, 245, 212, 0.1);
-  border: 1px solid rgba(0, 245, 212, 0.22);
+  background: var(--accent-surface);
+  border: 1px solid var(--accent-border);
 }
 
 /* SLIDING 360° TACTICAL COMPASS TAPE (22px micro strip, pointer-events: none) */
@@ -138,9 +171,9 @@ button:active {
   max-width: 210px;
   height: 22px;
   border-radius: 4px;
-  background: rgba(4, 9, 15, 0.84);
+  background: rgba(8, 11, 15, 0.9);
   backdrop-filter: blur(14px);
-  border: 1px solid rgba(0, 245, 212, 0.28);
+  border: 1px solid var(--accent-border);
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.52);
   overflow: hidden;
   pointer-events: none;
@@ -148,8 +181,8 @@ button:active {
   font-variant-numeric: tabular-nums;
 }
 .tactical-compass-tape.heading-up-on {
-  border-color: rgba(0, 245, 212, 0.72);
-  box-shadow: 0 0 12px rgba(0, 245, 212, 0.28);
+  border-color: var(--accent-cyan);
+  box-shadow: none;
 }
 .tape-scale {
   position: absolute;
@@ -174,16 +207,16 @@ button:active {
   background: rgba(226, 232, 240, 0.88);
 }
 .tape-tick.north .tape-mark {
-  background: #ff453a;
+  background: var(--accent-danger);
 }
 .tape-lbl {
   font-size: 0.51rem;
   font-weight: 800;
   line-height: 1.1;
-  color: rgba(203, 213, 225, 0.86);
+  color: rgba(203, 213, 225, 0.82);
 }
 .tape-tick.north .tape-lbl {
-  color: #ff453a;
+  color: var(--accent-danger);
 }
 .tape-bug {
   position: absolute;
@@ -206,7 +239,7 @@ button:active {
 .tape-bug.target {
   font-size: 0.6rem;
   color: var(--accent-gold);
-  text-shadow: 0 0 6px rgba(255, 214, 10, 0.75);
+  text-shadow: none;
 }
 .tape-lubber {
   position: absolute;
@@ -216,7 +249,7 @@ button:active {
   z-index: 4;
   border-left: 4px solid transparent;
   border-right: 4px solid transparent;
-  border-top: 4px solid var(--accent-cyan);
+  border-top: 4px solid var(--accent-hud);
 }
 .tape-center-mask {
   position: absolute;
@@ -229,10 +262,10 @@ button:active {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #050910;
+  background: #080b0f;
   box-shadow:
-    -6px 0 6px #050910,
-    6px 0 6px #050910;
+    -6px 0 6px #080b0f,
+    6px 0 6px #080b0f;
 }
 .tape-center-deg {
   display: inline-flex;
@@ -240,11 +273,11 @@ button:active {
   gap: 2px;
   padding: 0 4px;
   border-radius: 3px;
-  background: rgba(0, 245, 212, 0.12);
-  border: 1px solid rgba(0, 245, 212, 0.5);
+  background: var(--accent-surface);
+  border: 1px solid var(--accent-border);
   font-size: 0.58rem;
   font-weight: 800;
-  color: #ecfeff;
+  color: var(--accent-hud);
   line-height: 1.25;
 }
 .tape-hup-tag {
@@ -258,16 +291,16 @@ button:active {
   height: 5px;
   border-radius: 50%;
   flex-shrink: 0;
-  background: var(--accent-cyan);
-  box-shadow: 0 0 8px var(--accent-cyan);
+  background: #64748b;
+  box-shadow: none;
 }
 .pulse-dot.online {
-  background: var(--accent-emerald);
-  box-shadow: 0 0 8px var(--accent-emerald);
+  background: #64748b;
+  box-shadow: none;
 }
 .pulse-dot.offline {
-  background: var(--accent-gold);
-  box-shadow: 0 0 8px var(--accent-gold);
+  background: #94a3b8;
+  box-shadow: none;
 }
 
 .hud-version-pill {
@@ -275,17 +308,17 @@ button:active {
   font-weight: 800;
   padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(148, 163, 184, 0.14);
-  border: 1px solid rgba(148, 163, 184, 0.28);
-  color: #cbd5e1;
+  background: rgba(148, 163, 184, 0.12);
+  border: 1px solid var(--accent-border);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 .hud-version-pill.has-update {
-  background: rgba(0, 245, 212, 0.22);
+  background: var(--accent-surface);
   border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
-  box-shadow: 0 0 10px rgba(0, 245, 212, 0.4);
-  animation: otaPulse 1.8s ease-in-out infinite;
+  color: var(--accent-hud);
+  box-shadow: none;
+  animation: none;
 }
 @keyframes otaPulse {
   0%, 100% {
@@ -299,7 +332,7 @@ button:active {
 .tele-mini-sep {
   width: 1px;
   height: 11px;
-  background: rgba(0, 245, 212, 0.22);
+  background: var(--accent-border);
   flex-shrink: 0;
 }
 
@@ -326,9 +359,9 @@ button:active {
   gap: 2px;
   padding: 1px 5px;
   border-radius: 3px;
-  background: rgba(0, 245, 212, 0.14);
-  border: 1px solid rgba(0, 245, 212, 0.42);
-  color: var(--accent-cyan);
+  background: var(--accent-surface);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-hud);
   font-size: 0.63rem;
   font-weight: 800;
 }
@@ -352,25 +385,26 @@ button:active {
 }
 
 .view-mode-segmented button.active {
-  background: rgba(0, 245, 212, 0.22);
-  color: var(--accent-cyan);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.16);
+  background: var(--accent-surface);
+  color: var(--accent-hud);
+  box-shadow: none;
 }
 
 .hud-icon-btn {
   height: 20px;
   padding: 0 6px;
   border-radius: 4px;
-  font-size: 0.63rem;
+  font-size: 0.61rem;
   font-weight: 800;
+  letter-spacing: 0.03em;
   display: inline-flex;
   align-items: center;
   gap: 3px;
 }
 .hud-icon-btn.active {
-  background: rgba(0, 245, 212, 0.22);
+  background: var(--accent-surface);
   border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
+  color: var(--accent-hud);
 }
 
 .text-emerald {
@@ -394,11 +428,11 @@ button:active {
   align-items: center;
   gap: 4px;
   padding: 2px 8px;
-  border-radius: 999px;
-  background: rgba(56, 189, 248, 0.22);
+  border-radius: 5px;
+  background: rgba(12, 16, 22, 0.9);
   backdrop-filter: blur(14px);
-  border: 1px solid rgba(56, 189, 248, 0.5);
-  font-size: 0.67rem;
+  border: 1px solid var(--accent-border);
+  font-size: 0.65rem;
 }
 .portrait-action {
   border: none;
@@ -428,22 +462,27 @@ button:active {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  height: 26px;
+  height: 24px;
   padding: 0 6px 0 9px;
-  border-radius: 999px;
-  background: linear-gradient(135deg, rgba(0, 245, 212, 0.24), rgba(14, 165, 233, 0.26));
+  border-radius: 5px;
+  background: rgba(12, 16, 22, 0.92);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(0, 245, 212, 0.65);
-  box-shadow: 0 4px 16px rgba(0, 245, 212, 0.25);
+  border: 1px solid var(--accent-border);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+}
+.ota-quick-pill.apk-nudge-pill {
+  background: rgba(24, 18, 12, 0.94);
+  border-color: rgba(212, 155, 84, 0.45);
 }
 .ota-quick-act {
   border: none;
   background: transparent;
   padding: 2px 3px;
-  font-size: 0.67rem;
+  font-size: 0.65rem;
   font-weight: 800;
-  color: #ecfeff;
+  color: var(--accent-hud);
   white-space: nowrap;
+  text-decoration: none;
 }
 .ota-quick-act:disabled {
   opacity: 0.78;
@@ -581,9 +620,9 @@ button:active {
   font-weight: 600;
 }
 .chip-row button.active {
-  background: rgba(56, 189, 248, 0.22);
-  border-color: var(--accent-blue);
-  color: #fff;
+  background: var(--accent-surface);
+  border-color: var(--accent-cyan);
+  color: var(--accent-hud);
 }
 
 /* MAIN STAGE */
@@ -663,9 +702,9 @@ button:active {
   max-width: 175px;
   padding: 2px 6px;
   border-radius: 4px;
-  background: rgba(4, 9, 15, 0.84);
-  border: 1px solid rgba(255, 255, 255, 0.16);
-  border-left: 2.5px solid var(--badge-accent, #00f5d4);
+  background: rgba(8, 11, 15, 0.88);
+  border: 1px solid var(--accent-border);
+  border-left: 2.5px solid var(--badge-accent, var(--accent-cyan));
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
   font-size: 0.57rem;
   font-weight: 700;
@@ -723,9 +762,9 @@ button:active {
   height: 26px;
   padding: 0 8px;
   border-radius: 5px;
-  background: rgba(4, 9, 15, 0.86);
+  background: rgba(8, 11, 15, 0.9);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(0, 245, 212, 0.28);
+  border: 1px solid var(--accent-border);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.62rem;
   font-weight: 800;
@@ -733,19 +772,19 @@ button:active {
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.52);
 }
 .cam-north-3d-btn.active {
-  background: rgba(0, 245, 212, 0.22);
+  background: var(--accent-surface);
   border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
-  box-shadow: 0 0 14px rgba(0, 245, 212, 0.35);
+  color: var(--accent-hud);
+  box-shadow: none;
 }
 
 .floating-recenter-btn {
   height: 26px;
   padding: 0 8px;
   border-radius: 5px;
-  background: rgba(4, 9, 15, 0.86);
+  background: rgba(8, 11, 15, 0.9);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(0, 245, 212, 0.28);
+  border: 1px solid var(--accent-border);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.62rem;
   font-weight: 800;
@@ -865,7 +904,7 @@ button:active {
   position: absolute;
   width: 11px;
   height: 11px;
-  border-color: rgba(0, 245, 212, 0.42);
+  border-color: var(--accent-border);
   border-style: solid;
 }
 .tactical-hud-corners .thc.tl {
@@ -934,21 +973,21 @@ button:active {
   height: 26px;
   padding: 0 8px;
   border-radius: 5px;
-  background: rgba(4, 9, 15, 0.86);
+  background: rgba(8, 11, 15, 0.9);
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(0, 245, 212, 0.28);
+  border: 1px solid var(--accent-border);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.62rem;
   font-weight: 800;
   letter-spacing: 0.04em;
-  color: #fff;
+  color: var(--text-primary);
   text-decoration: none;
 }
 .map-2d-floating-controls button.active {
-  background: rgba(0, 245, 212, 0.22);
+  background: var(--accent-surface);
   border-color: var(--accent-cyan);
-  color: var(--accent-cyan);
-  box-shadow: 0 0 14px rgba(0, 245, 212, 0.35);
+  color: var(--accent-hud);
+  box-shadow: none;
 }
 
 .poi-dot {
@@ -1116,19 +1155,17 @@ button:active {
   gap: 4px;
   padding: 0 5px;
   border-radius: 5px;
-  background: rgba(4, 9, 15, 0.88);
-  backdrop-filter: blur(22px) saturate(170%);
-  border: 1px solid rgba(0, 245, 212, 0.28);
-  box-shadow:
-    inset 0 1px 0 rgba(0, 245, 212, 0.24),
-    0 8px 24px rgba(0, 0, 0, 0.65);
+  background: rgba(8, 11, 15, 0.9);
+  backdrop-filter: blur(22px) saturate(130%);
+  border: 1px solid var(--accent-border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
   font-family: ui-monospace, SFMono-Regular, Consolas, 'Segoe UI', monospace;
 }
 
 .zen-tele-readout {
   font-size: 0.62rem;
   font-weight: 800;
-  color: var(--accent-cyan);
+  color: var(--accent-hud);
   padding: 0 6px;
   letter-spacing: 0.04em;
   font-variant-numeric: tabular-nums;
@@ -1146,11 +1183,11 @@ button:active {
   background: rgba(255, 255, 255, 0.04);
 }
 .dock-btn.rec-active .dock-lbl {
-  color: var(--accent-cyan);
+  color: var(--accent-hud);
 }
 .dock-btn.gps-live {
-  background: rgba(0, 245, 212, 0.14);
-  border-color: rgba(0, 245, 212, 0.42);
+  background: var(--accent-surface);
+  border-color: var(--accent-cyan);
 }
 .dock-icon {
   font-size: 0.84rem;
@@ -1173,10 +1210,10 @@ button:active {
   height: 22px;
   padding: 0 11px;
   border-radius: 4px;
-  background: linear-gradient(135deg, #ff9f0a, #ff375f);
-  border: 1px solid rgba(255, 255, 255, 0.42);
-  box-shadow: 0 3px 12px rgba(255, 100, 30, 0.45);
-  color: #fff;
+  background: rgba(226, 232, 240, 0.14);
+  border: 1px solid rgba(226, 232, 240, 0.38);
+  box-shadow: none;
+  color: #f1f5f9;
 }
 .pin-bolt {
   font-size: 0.85rem;
@@ -1765,9 +1802,9 @@ select {
   pointer-events: none;
   padding: 1px 6px;
   border-radius: 3px;
-  background: rgba(4, 9, 15, 0.82);
-  border: 1px solid rgba(0, 245, 212, 0.28);
-  color: rgba(186, 230, 253, 0.86);
+  background: rgba(8, 11, 15, 0.9);
+  border: 1px solid var(--accent-border);
+  color: var(--accent-hud);
   font-size: 0.54rem;
   font-weight: 700;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -1785,16 +1822,16 @@ select {
   gap: 1px;
   padding: 3px 4px;
   border-radius: 6px;
-  background: rgba(4, 9, 15, 0.86);
-  backdrop-filter: blur(22px) saturate(180%);
-  border: 1px solid rgba(0, 245, 212, 0.28);
+  background: rgba(8, 11, 15, 0.9);
+  backdrop-filter: blur(22px) saturate(130%);
+  border: 1px solid var(--accent-border);
   box-shadow: 0 8px 22px rgba(0, 0, 0, 0.58);
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-variant-numeric: tabular-nums;
 }
 .floating-compass-widget.mag-warn {
   border-color: var(--accent-orange);
-  box-shadow: 0 0 16px rgba(255, 159, 10, 0.45);
+  box-shadow: 0 0 12px rgba(184, 126, 82, 0.35);
 }
 .fcw-dial-shell {
   position: relative;
@@ -1812,9 +1849,9 @@ select {
   width: 2.5px;
   height: 6px;
   border-radius: 2px;
-  background: #ff3b30;
+  background: var(--accent-danger);
   z-index: 2;
-  box-shadow: 0 0 6px #ff3b30;
+  box-shadow: none;
 }
 .fcw-svg {
   transition: transform 110ms cubic-bezier(0.22, 1, 0.36, 1);
@@ -2165,13 +2202,14 @@ select {
   left: 50%;
   transform: translateX(-50%);
   z-index: 950;
-  padding: 8px 16px;
-  border-radius: 99px;
-  background: rgba(0, 245, 212, 0.92);
-  color: #041318;
-  font-size: 0.78rem;
-  font-weight: 800;
-  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
+  padding: 7px 14px;
+  border-radius: 6px;
+  background: rgba(15, 20, 28, 0.95);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-cyan);
+  font-size: 0.74rem;
+  font-weight: 700;
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.55);
   white-space: nowrap;
 }
 

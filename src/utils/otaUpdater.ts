@@ -47,6 +47,7 @@ export interface GithubOtaCheckResult {
 
 export interface OtaRuntimeInfo {
   appVersion: string;
+  nativeApkVersion: string;
   buildNumber: number;
   builtAt: string;
   note: string;
@@ -161,6 +162,7 @@ export async function getCurrentOtaRuntimeInfo(): Promise<OtaRuntimeInfo> {
   const applied = safeReadJson<{ source: string; appliedAt: string }>(APPLIED_META_STORAGE_KEY);
   let nativeBundleId = 'web-preview';
   let nativeBundleVersion = APP_BUILD_INFO.version;
+  let nativeApkVersion = APP_BUILD_INFO.version;
   let isBuiltinBundle = true;
 
   if (isNative) {
@@ -168,6 +170,7 @@ export async function getCurrentOtaRuntimeInfo(): Promise<OtaRuntimeInfo> {
       const cur = await CapacitorUpdater.current();
       nativeBundleId = cur.bundle.id;
       nativeBundleVersion = cur.bundle.version || APP_BUILD_INFO.version;
+      nativeApkVersion = cur.native || APP_BUILD_INFO.version;
       isBuiltinBundle = cur.bundle.id === 'builtin';
     } catch {
       nativeBundleId = 'builtin';
@@ -176,6 +179,7 @@ export async function getCurrentOtaRuntimeInfo(): Promise<OtaRuntimeInfo> {
 
   return {
     appVersion: APP_BUILD_INFO.version,
+    nativeApkVersion,
     buildNumber: APP_BUILD_INFO.buildNumber,
     builtAt: APP_BUILD_INFO.builtAt,
     note: APP_BUILD_INFO.note,

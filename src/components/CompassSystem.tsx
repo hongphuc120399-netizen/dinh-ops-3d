@@ -108,7 +108,7 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
                 y1={isMajor ? '6' : '8'}
                 x2="50"
                 y2={isMajor ? '14' : '12'}
-                stroke={idx === 0 ? '#FF3B30' : isMajor ? '#E2E8F0' : 'rgba(148,163,184,0.55)'}
+                stroke={idx === 0 ? '#c26d68' : isMajor ? '#cbd5e1' : 'rgba(148,163,184,0.45)'}
                 strokeWidth={isMajor ? '2.2' : '1.3'}
                 transform={`rotate(${a} 50 50)`}
               />
@@ -116,7 +116,7 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
           })}
 
           {/* Cardinal Labels */}
-          <text x="50" y="25" textAnchor="middle" fill="#FF453A" fontSize="13" fontWeight="800">
+          <text x="50" y="25" textAnchor="middle" fill="#c26d68" fontSize="13" fontWeight="800">
             B
           </text>
           <text x="79" y="54" textAnchor="middle" fill="#CBD5E1" fontSize="10.5" fontWeight="700">
@@ -130,28 +130,28 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
           </text>
 
           {/* Center North/South Needle */}
-          <polygon points="50,28 45.5,50 54.5,50" fill="#FF3B30" />
-          <polygon points="50,72 45.5,50 54.5,50" fill="rgba(226,232,240,0.75)" />
-          <circle cx="50" cy="50" r="3.5" fill="#0F172A" stroke="#F8FAFC" strokeWidth="1.5" />
+          <polygon points="50,28 45.5,50 54.5,50" fill="#c26d68" />
+          <polygon points="50,72 45.5,50 54.5,50" fill="rgba(226,232,240,0.65)" />
+          <circle cx="50" cy="50" r="3.5" fill="#0F172A" stroke="#CBD5E1" strokeWidth="1.5" />
 
-          {/* Locked Sighting Bearing Bug (Cyan) */}
+          {/* Locked Sighting Bearing Bug */}
           {lockedBearing !== null && (
             <g transform={`rotate(${lockedBearing} 50 50)`}>
-              <polygon points="50,2 45,10 55,10" fill="#00F5D4" />
+              <polygon points="50,2 45,10 55,10" fill="#cbd5e1" />
             </g>
           )}
 
-          {/* Locked Target Bearing Bug (Gold) */}
+          {/* Locked Target Bearing Bug */}
           {targetBearing !== null && (
             <g transform={`rotate(${targetBearing} 50 50)`}>
-              <circle cx="50" cy="6" r="4.2" fill="#FFD60A" stroke="#090D16" strokeWidth="1.2" />
+              <circle cx="50" cy="6" r="4.2" fill="#d49b54" stroke="#090D16" strokeWidth="1.2" />
             </g>
           )}
 
-          {/* GPS Course Bug (Emerald) */}
+          {/* GPS Course Bug */}
           {gpsCourse !== null && (
             <g transform={`rotate(${gpsCourse} 50 50)`}>
-              <circle cx="50" cy="11" r="2.5" fill="#30D158" />
+              <circle cx="50" cy="11" r="2.5" fill="#86a88a" />
             </g>
           )}
         </svg>

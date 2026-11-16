@@ -7,6 +7,7 @@ import type {
   NuiDinhDataset,
   PinCategory,
   PoiItem,
+  TacticalPalette,
   TacticalTarget,
   Terrain3DSkin,
   TrackPoint,
@@ -51,6 +52,7 @@ interface Terrain3DViewProps {
   isSimMode: boolean;
   syntheticLandscape?: boolean;
   headingUp: boolean;
+  palette?: TacticalPalette;
   onToggleHeadingUp: () => void;
   onMapInteractionChange?: (active: boolean) => void;
   flyToTrigger: { lat: number; lon: number; zoom?: number; seq: number } | null;
@@ -85,16 +87,108 @@ const PIN_EMOJI: Record<PinCategory, { emoji: string; color: string }> = {
 };
 
 const POI_STYLE: Record<string, { emoji: string; color: string }> = {
-  peak: { emoji: '⛰️', color: '#FF9F0A' },
-  viewpoint: { emoji: '🚁', color: '#FFD60A' },
-  temple: { emoji: '⛩️', color: '#F59E0B' },
-  water: { emoji: '🌊', color: '#38BDF8' },
-  camp: { emoji: '⛺', color: '#34D399' },
-  junction: { emoji: '🔀', color: '#22D3EE' },
-  boulder: { emoji: '🧗', color: '#A78BFA' },
-  historic: { emoji: '🏛️', color: '#F87171' },
-  warning: { emoji: '⚡', color: '#EF4444' }
+  peak: { emoji: '⛰️', color: '#D4A154' },
+  viewpoint: { emoji: '🚁', color: '#D4B150' },
+  temple: { emoji: '⛩️', color: '#C49048' },
+  water: { emoji: '🌊', color: '#5A92B2' },
+  camp: { emoji: '⛺', color: '#5F9E7D' },
+  junction: { emoji: '🔀', color: '#649BA6' },
+  boulder: { emoji: '🧗', color: '#8E84B5' },
+  historic: { emoji: '🏛️', color: '#BA6D68' },
+  warning: { emoji: '⚡', color: '#C8554E' }
 };
+
+const TACTICAL_ROUTE_COLORS: Record<TacticalPalette, Record<string, string>> = {
+  slate: {
+    red: '#B07C74',
+    yellow: '#B8AA82',
+    blue: '#7A93AC',
+    green: '#7E9B88'
+  },
+  olive: {
+    red: '#A87668',
+    yellow: '#B5A87E',
+    blue: '#789296',
+    green: '#84A37E'
+  },
+  amber: {
+    red: '#D48856',
+    yellow: '#C9A66B',
+    blue: '#A38355',
+    green: '#B89660'
+  },
+  vivid: {
+    red: '#D9534F',
+    yellow: '#D4B13B',
+    blue: '#4A89DC',
+    green: '#48A868'
+  }
+};
+
+export function resolveRouteColor(
+  routeId: string,
+  fallbackColor: string,
+  palette: TacticalPalette = 'slate'
+): string {
+  const key = routeId.toLowerCase();
+  const table = TACTICAL_ROUTE_COLORS[palette] || TACTICAL_ROUTE_COLORS.slate;
+  for (const idKey of ['red', 'yellow', 'blue', 'green']) {
+    if (key.includes(idKey)) return table[idKey];
+  }
+  return fallbackColor;
+}
+
+export function getMapOverlayPalette(palette: TacticalPalette = 'slate') {
+  const isVivid = palette === 'vivid';
+  const primary =
+    palette === 'amber'
+      ? 0xd49b54
+      : palette === 'olive'
+        ? 0x9ab096
+        : isVivid
+          ? 0x00f5d4
+          : 0x94a3b8;
+  const primaryHex =
+    palette === 'amber'
+      ? '#D49B54'
+      : palette === 'olive'
+        ? '#9AB096'
+        : isVivid
+          ? '#00F5D4'
+          : '#CBD5E1';
+  return {
+    stream: isVivid ? '#38BDF8' : '#4A667A',
+    streamOpacity: isVivid ? 0.75 : 0.42,
+    power: isVivid ? '#C084FC' : '#5A6572',
+    powerOpacity: isVivid ? 0.65 : 0.32,
+    trail2D: isVivid ? '#E2E8F0' : '#788696',
+    trail2DOpacity: isVivid ? 0.65 : 0.4,
+    hazardHex: isVivid ? '#FF2D55' : '#8F4B4B',
+    hazardQuarryHex: isVivid ? '#FF9F0A' : '#8F4B4B',
+    hazardNum: isVivid ? 0xff2d55 : 0x8f4b4b,
+    hazardWallOpacity: isVivid ? 0.24 : 0.14,
+    hazardLineOpacity: isVivid ? 0.92 : 0.45,
+    warningNum: isVivid ? 0xff3b30 : 0xa65853,
+    junctionNum: isVivid ? 0x22d3ee : 0x7b93ab,
+    primaryHex,
+    primaryNum: primary,
+    playerCoreNum: isVivid ? 0x00f5d4 : 0xcbd5e1,
+    arrowHex: isVivid ? '#30D158' : '#7D9E85',
+    arrowNum: isVivid ? 0x30d158 : 0x7d9e85,
+    arcNum: isVivid ? 0xffd60a : 0xc8a25a,
+    groundArcNum: isVivid ? 0xff9f0a : 0xb87e52
+  };
+}
+
+function resolvePoiBadgeAccent(category: string, palette: TacticalPalette): string {
+  if (palette === 'vivid') {
+    return (POI_STYLE[category] || { color: '#94A3B8' }).color;
+  }
+  if (category === 'warning') return '#B06A63';
+  if (palette === 'olive') return '#8FA68A';
+  if (palette === 'amber') return '#C2955A';
+  return '#8B9BB0';
+}
 
 function clearAndDisposeGroup(grp: THREE.Group): void {
   while (grp.children.length > 0) {
@@ -162,7 +256,8 @@ function createCardinalSprite(label: string, color: string): {
 
 function buildProceduralTerrainCanvas(
   dataset: NuiDinhDataset,
-  mode: 'tactical' | 'topo' | 'night'
+  mode: 'tactical' | 'topo' | 'night',
+  palette: TacticalPalette = 'slate'
 ): HTMLCanvasElement {
   const W = 1536;
   const H = 1536;
@@ -204,65 +299,210 @@ function buildProceduralTerrainCanvas(
       let r = 0, g = 0, b = 0;
 
       if (mode === 'tactical') {
-        // High-Contrast Obsidian-Teal & Dark Olive Spec-Ops Recon Skin
-        if (ele < 25) {
-          r = 5; g = 10; b = 15;
-        } else if (ele < 110) {
-          const t = (ele - 25) / 85;
-          r = 5 + t * 5;
-          g = 10 + t * 11;
-          b = 15 + t * 15;
-        } else if (ele < 260) {
-          const t = (ele - 110) / 150;
-          r = 10 + t * 7;
-          g = 21 + t * 13;
-          b = 30 + t * 7;
-        } else if (ele < 400) {
-          const t = (ele - 260) / 140;
-          r = 17 + t * 10;
-          g = 34 + t * 15;
-          b = 37 - t * 4;
-        } else {
-          const t = Math.min(1, (ele - 400) / 115);
-          r = 27 + t * 16;
-          g = 49 + t * 17;
-          b = 33 + t * 13;
-        }
-
-        if (slope > 0.62) {
-          const cliffFactor = Math.min(1, (slope - 0.62) * 2.3);
-          r = r * (1 - cliffFactor) + 195 * cliffFactor;
-          g = g * (1 - cliffFactor) + 64 * cliffFactor;
-          b = b * (1 - cliffFactor) + 48 * cliffFactor;
-        }
-
-        r *= shade * 1.1;
-        g *= shade * 1.1;
-        b *= shade * 1.1;
-
-        // Sharp 100m amber primary & 25m cyan secondary contours
-        if (ele > 15) {
-          const mod100 = ele % 100;
-          const mod25 = ele % 25;
-          const tol = Math.max(0.32, slope * 1.55);
-          if (mod100 < tol || 100 - mod100 < tol) {
-            r = r * 0.35 + 255 * 0.65;
-            g = g * 0.35 + 206 * 0.65;
-            b = b * 0.35 + 36 * 0.65;
-          } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
-            r = r * 0.66 + 42 * 0.34;
-            g = g * 0.66 + 195 * 0.34;
-            b = b * 0.66 + 245 * 0.34;
+        if (palette === 'slate') {
+          // Low-saturation Obsidian Charcoal-Slate Spec-Ops Terrain
+          if (ele < 25) {
+            r = 8; g = 11; b = 15;
+          } else if (ele < 110) {
+            const t = (ele - 25) / 85;
+            r = 8 + t * 6;
+            g = 11 + t * 7;
+            b = 15 + t * 7;
+          } else if (ele < 260) {
+            const t = (ele - 110) / 150;
+            r = 14 + t * 7;
+            g = 18 + t * 8;
+            b = 22 + t * 9;
+          } else if (ele < 400) {
+            const t = (ele - 260) / 140;
+            r = 21 + t * 6;
+            g = 26 + t * 7;
+            b = 31 + t * 8;
+          } else {
+            const t = Math.min(1, (ele - 400) / 115);
+            r = 27 + t * 7;
+            g = 33 + t * 8;
+            b = 39 + t * 8;
           }
-        }
 
-        // Subtle 500m tactical crosshair ticks (+)
-        const mx = Math.min(x % 96, 96 - (x % 96));
-        const my = Math.min(y % 96, 96 - (y % 96));
-        if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
-          r += 16;
-          g += 72;
-          b += 76;
+          if (slope > 0.62) {
+            const cliffFactor = Math.min(1, (slope - 0.62) * 2.2);
+            r = r * (1 - cliffFactor) + 120 * cliffFactor;
+            g = g * (1 - cliffFactor) + 96 * cliffFactor;
+            b = b * (1 - cliffFactor) + 84 * cliffFactor;
+          }
+
+          r *= shade * 1.18;
+          g *= shade * 1.18;
+          b *= shade * 1.18;
+
+          if (ele > 15) {
+            const mod100 = ele % 100;
+            const mod25 = ele % 25;
+            const tol = Math.max(0.32, slope * 1.55);
+            if (mod100 < tol || 100 - mod100 < tol) {
+              r = r * 0.56 + 130 * 0.44;
+              g = g * 0.56 + 145 * 0.44;
+              b = b * 0.56 + 160 * 0.44;
+            } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
+              r = r * 0.78 + 70 * 0.22;
+              g = g * 0.78 + 82 * 0.22;
+              b = b * 0.78 + 94 * 0.22;
+            }
+          }
+
+          const mx = Math.min(x % 96, 96 - (x % 96));
+          const my = Math.min(y % 96, 96 - (y % 96));
+          if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
+            r += 14; g += 18; b += 24;
+          }
+        } else if (palette === 'olive') {
+          // Muted Olive-Black Spec-Ops Recon Skin
+          if (ele < 25) {
+            r = 8; g = 13; b = 10;
+          } else if (ele < 180) {
+            const t = (ele - 25) / 155;
+            r = 8 + t * 11;
+            g = 13 + t * 14;
+            b = 10 + t * 9;
+          } else if (ele < 360) {
+            const t = (ele - 180) / 180;
+            r = 19 + t * 8;
+            g = 27 + t * 9;
+            b = 19 + t * 8;
+          } else {
+            const t = Math.min(1, (ele - 360) / 155);
+            r = 27 + t * 8;
+            g = 36 + t * 9;
+            b = 27 + t * 7;
+          }
+
+          if (slope > 0.62) {
+            const cliffFactor = Math.min(1, (slope - 0.62) * 2.2);
+            r = r * (1 - cliffFactor) + 125 * cliffFactor;
+            g = g * (1 - cliffFactor) + 92 * cliffFactor;
+            b = b * (1 - cliffFactor) + 76 * cliffFactor;
+          }
+
+          r *= shade * 1.15;
+          g *= shade * 1.15;
+          b *= shade * 1.15;
+
+          if (ele > 15) {
+            const mod100 = ele % 100;
+            const mod25 = ele % 25;
+            const tol = Math.max(0.32, slope * 1.55);
+            if (mod100 < tol || 100 - mod100 < tol) {
+              r = r * 0.56 + 132 * 0.44;
+              g = g * 0.56 + 154 * 0.44;
+              b = b * 0.56 + 128 * 0.44;
+            } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
+              r = r * 0.78 + 64 * 0.22;
+              g = g * 0.78 + 82 * 0.22;
+              b = b * 0.78 + 62 * 0.22;
+            }
+          }
+
+          const mx = Math.min(x % 96, 96 - (x % 96));
+          const my = Math.min(y % 96, 96 - (y % 96));
+          if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
+            r += 14; g += 24; b += 16;
+          }
+        } else if (palette === 'amber') {
+          // Cockpit Night Amber Brown Terrain Skin
+          const norm = Math.min(1, ele / 515);
+          r = 12 + norm * 24;
+          g = 9 + norm * 18;
+          b = 6 + norm * 12;
+
+          if (slope > 0.62) {
+            const cliffFactor = Math.min(1, (slope - 0.62) * 2.2);
+            r = r * (1 - cliffFactor) + 148 * cliffFactor;
+            g = g * (1 - cliffFactor) + 90 * cliffFactor;
+            b = b * (1 - cliffFactor) + 58 * cliffFactor;
+          }
+
+          r *= shade * 1.15;
+          g *= shade * 1.15;
+          b *= shade * 1.15;
+
+          if (ele > 15) {
+            const mod100 = ele % 100;
+            const mod25 = ele % 25;
+            const tol = Math.max(0.32, slope * 1.55);
+            if (mod100 < tol || 100 - mod100 < tol) {
+              r = r * 0.55 + 176 * 0.45;
+              g = g * 0.55 + 130 * 0.45;
+              b = b * 0.55 + 74 * 0.45;
+            } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
+              r = r * 0.78 + 92 * 0.22;
+              g = g * 0.78 + 68 * 0.22;
+              b = b * 0.78 + 40 * 0.22;
+            }
+          }
+
+          const mx = Math.min(x % 96, 96 - (x % 96));
+          const my = Math.min(y % 96, 96 - (y % 96));
+          if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
+            r += 24; g += 16; b += 8;
+          }
+        } else {
+          // Vivid Deep-Teal / Olive Spec-Ops Skin
+          if (ele < 25) {
+            r = 5; g = 10; b = 15;
+          } else if (ele < 110) {
+            const t = (ele - 25) / 85;
+            r = 5 + t * 5;
+            g = 10 + t * 11;
+            b = 15 + t * 15;
+          } else if (ele < 260) {
+            const t = (ele - 110) / 150;
+            r = 10 + t * 7;
+            g = 21 + t * 13;
+            b = 30 + t * 7;
+          } else if (ele < 400) {
+            const t = (ele - 260) / 140;
+            r = 17 + t * 10;
+            g = 34 + t * 15;
+            b = 37 - t * 4;
+          } else {
+            const t = Math.min(1, (ele - 400) / 115);
+            r = 27 + t * 16;
+            g = 49 + t * 17;
+            b = 33 + t * 13;
+          }
+
+          if (slope > 0.62) {
+            const cliffFactor = Math.min(1, (slope - 0.62) * 2.3);
+            r = r * (1 - cliffFactor) + 175 * cliffFactor;
+            g = g * (1 - cliffFactor) + 72 * cliffFactor;
+            b = b * (1 - cliffFactor) + 56 * cliffFactor;
+          }
+
+          r *= shade * 1.1;
+          g *= shade * 1.1;
+          b *= shade * 1.1;
+
+          if (ele > 15) {
+            const mod100 = ele % 100;
+            const mod25 = ele % 25;
+            const tol = Math.max(0.32, slope * 1.55);
+            if (mod100 < tol || 100 - mod100 < tol) {
+              r = r * 0.45 + 215 * 0.55;
+              g = g * 0.45 + 175 * 0.55;
+              b = b * 0.45 + 75 * 0.55;
+            } else if (mod25 < tol * 0.6 || 25 - mod25 < tol * 0.6) {
+              r = r * 0.72 + 56 * 0.28;
+              g = g * 0.72 + 165 * 0.28;
+              b = b * 0.72 + 195 * 0.28;
+            }
+          }
+
+          const mx = Math.min(x % 96, 96 - (x % 96));
+          const my = Math.min(y % 96, 96 - (y % 96));
+          if ((mx === 0 && my <= 5) || (my === 0 && mx <= 5)) {
+            r += 16; g += 62; b += 66;
+          }
         }
       } else if (mode === 'night') {
         // Tactical Night Vision Recon Skin
@@ -450,6 +690,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
   isSimMode,
   syntheticLandscape = false,
   headingUp,
+  palette = 'slate',
   onToggleHeadingUp,
   onMapInteractionChange,
   flyToTrigger,
@@ -496,6 +737,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     isSimMode,
     syntheticLandscape,
     headingUp,
+    palette,
     onMapInteractionChange
   });
   liveStateRef.current = {
@@ -514,6 +756,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     isSimMode,
     syntheticLandscape,
     headingUp,
+    palette,
     onMapInteractionChange
   };
 
@@ -538,9 +781,19 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     courseArrowGroup: THREE.Group;
     inspectMarker: THREE.Mesh;
     tacticalTexture: THREE.CanvasTexture | null;
+    tacticalPalette: TacticalPalette;
     topoTexture: THREE.CanvasTexture | null;
     nightTexture: THREE.CanvasTexture | null;
     satTexture: THREE.CanvasTexture | null;
+    playerMaterials: {
+      coreMat: THREE.MeshBasicMaterial;
+      haloMat: THREE.MeshBasicMaterial;
+      rangeMat: THREE.MeshBasicMaterial;
+      spireMat: THREE.MeshBasicMaterial;
+      coneMat: THREE.MeshBasicMaterial;
+      sightBeamMat: THREE.LineBasicMaterial;
+      arrowMat: THREE.MeshBasicMaterial;
+    };
   } | null>(null);
 
   // 1. Initialize Three.js Scene Once
@@ -635,7 +888,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     sunLight.position.set(-3200, 4600, -2800);
     scene.add(sunLight);
 
-    const rimLight = new THREE.DirectionalLight(0x38bdf8, 0.38);
+    const rimLight = new THREE.DirectionalLight(0x64748b, 0.35);
     rimLight.position.set(3000, 1800, 3200);
     scene.add(rimLight);
 
@@ -649,15 +902,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     }
     terrainGeo.computeVertexNormals();
 
-    const tacticalCanvas = buildProceduralTerrainCanvas(dataset, 'tactical');
+    const initPalette = liveStateRef.current.palette || 'slate';
+    const initOv = getMapOverlayPalette(initPalette);
+    const tacticalCanvas = buildProceduralTerrainCanvas(dataset, 'tactical', initPalette);
     const tacticalTex = new THREE.CanvasTexture(tacticalCanvas);
     tacticalTex.colorSpace = THREE.SRGBColorSpace;
     tacticalTex.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
 
     const terrainMat = new THREE.MeshStandardMaterial({
       map: tacticalTex,
-      roughness: 0.88,
-      metalness: 0.06
+      roughness: 0.9,
+      metalness: 0.05
     });
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     scene.add(terrainMesh);
@@ -666,24 +921,24 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const plinthGeo = new THREE.BoxGeometry(widthM + 20, 160, depthM + 20);
     plinthGeo.translate(0, -82, 0);
     const plinthMat = new THREE.MeshStandardMaterial({
-      color: 0x0c1219,
+      color: 0x0c1117,
       roughness: 0.95,
-      metalness: 0.1
+      metalness: 0.08
     });
     const skirtMesh = new THREE.Mesh(plinthGeo, plinthMat);
     scene.add(skirtMesh);
 
     // Subtle North-South-East-West Cardinal Rim Ring & Perimeter Sprites
-    const gridHelper = new THREE.GridHelper(Math.max(widthM, depthM) * 1.15, 24, 0x164e63, 0x0f172a);
+    const gridHelper = new THREE.GridHelper(Math.max(widthM, depthM) * 1.15, 24, 0x1e293b, 0x0d131a);
     gridHelper.position.y = -4;
     scene.add(gridHelper);
 
     const staticDisposables: { dispose: () => void }[] = [];
     const cardinalDefs: [string, string, number, number, number][] = [
-      ['B • 000°', '#FF453A', 0, 90, -depthM * 0.54],
-      ['Đ • 090°', '#38BDF8', widthM * 0.54, 90, 0],
-      ['N • 180°', '#94A3B8', 0, 90, depthM * 0.54],
-      ['T • 270°', '#38BDF8', -widthM * 0.54, 90, 0]
+      ['B • 000°', '#B85C56', 0, 90, -depthM * 0.54],
+      ['Đ • 090°', '#7B93AB', widthM * 0.54, 90, 0],
+      ['N • 180°', '#64748B', 0, 90, depthM * 0.54],
+      ['T • 270°', '#7B93AB', -widthM * 0.54, 90, 0]
     ];
     for (const [lbl, col, cx, cy, cz] of cardinalDefs) {
       const { sprite, tex, mat } = createCardinalSprite(lbl, col);
@@ -702,9 +957,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const playerGroup = new THREE.Group();
     scene.add(playerGroup);
 
-    // Glowing Core Sphere
+    // Core Sphere
     const coreGeo = new THREE.SphereGeometry(14, 20, 20);
-    const coreMat = new THREE.MeshBasicMaterial({ color: 0x00f5d4 });
+    const coreMat = new THREE.MeshBasicMaterial({ color: initOv.playerCoreNum });
     const coreMesh = new THREE.Mesh(coreGeo, coreMat);
     coreMesh.position.y = 16;
     playerGroup.add(coreMesh);
@@ -713,9 +968,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const haloGeo = new THREE.RingGeometry(22, 34, 32);
     haloGeo.rotateX(-Math.PI / 2);
     const haloMat = new THREE.MeshBasicMaterial({
-      color: 0x00f5d4,
+      color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.55,
+      opacity: 0.45,
       side: THREE.DoubleSide,
       depthWrite: false
     });
@@ -727,9 +982,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const rangeGeo = new THREE.RingGeometry(118, 122, 48);
     rangeGeo.rotateX(-Math.PI / 2);
     const rangeMat = new THREE.MeshBasicMaterial({
-      color: 0x00f5d4,
+      color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.32,
+      opacity: 0.24,
       side: THREE.DoubleSide,
       depthWrite: false
     });
@@ -742,9 +997,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const spireGeo = new THREE.CylinderGeometry(1.5, 4, 110, 8);
     spireGeo.translate(0, 55, 0);
     const spireMat = new THREE.MeshBasicMaterial({
-      color: 0x00f5d4,
+      color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.34,
       depthWrite: false
     });
     playerGroup.add(new THREE.Mesh(spireGeo, spireMat));
@@ -764,30 +1019,30 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const coneGeo = new THREE.ShapeGeometry(sectorShape);
     coneGeo.rotateX(-Math.PI / 2);
     const coneMat = new THREE.MeshBasicMaterial({
-      color: 0x38bdf8,
+      color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.28,
+      opacity: 0.18,
       side: THREE.DoubleSide,
       depthWrite: false
     });
     const viewConeMesh = new THREE.Mesh(coneGeo, coneMat);
     viewConeMesh.position.y = 8;
 
-    // 380m Laser Sighting Centerline along forward phone axis (-Z)
+    // 380m Sighting Centerline along forward phone axis (-Z)
     const sightBeamGeo = new THREE.BufferGeometry().setFromPoints([
       new THREE.Vector3(0, 1, 0),
       new THREE.Vector3(0, 1, -380)
     ]);
     const sightBeamMat = new THREE.LineBasicMaterial({
-      color: 0x00f5d4,
+      color: initOv.playerCoreNum,
       transparent: true,
-      opacity: 0.78
+      opacity: 0.58
     });
     viewConeMesh.add(new THREE.Line(sightBeamGeo, sightBeamMat));
     staticDisposables.push(sightBeamGeo, sightBeamMat);
     playerGroup.add(viewConeMesh);
 
-    // True GPS Course Arrow (Emerald Green vector arrow!)
+    // True GPS Course Arrow (Subdued Olive/Emerald Vector)
     const courseArrowGroup = new THREE.Group();
     const shaftGeo = new THREE.CylinderGeometry(3.2, 3.2, 130, 8);
     shaftGeo.rotateX(Math.PI / 2);
@@ -795,7 +1050,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const headGeo = new THREE.ConeGeometry(12, 34, 12);
     headGeo.rotateX(-Math.PI / 2);
     headGeo.translate(0, 12, -142);
-    const arrowMat = new THREE.MeshBasicMaterial({ color: 0x30d158 });
+    const arrowMat = new THREE.MeshBasicMaterial({ color: initOv.arrowNum });
     courseArrowGroup.add(new THREE.Mesh(shaftGeo, arrowMat), new THREE.Mesh(headGeo, arrowMat));
     playerGroup.add(courseArrowGroup);
 
@@ -803,7 +1058,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const inspectGeo = new THREE.RingGeometry(14, 22, 24);
     inspectGeo.rotateX(-Math.PI / 2);
     const inspectMat = new THREE.MeshBasicMaterial({
-      color: 0xffd60a,
+      color: 0xc8a25a,
       side: THREE.DoubleSide,
       transparent: true,
       opacity: 0.9,
@@ -829,9 +1084,19 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       courseArrowGroup,
       inspectMarker,
       tacticalTexture: tacticalTex,
+      tacticalPalette: initPalette,
       topoTexture: null,
       nightTexture: null,
-      satTexture: null
+      satTexture: null,
+      playerMaterials: {
+        coreMat,
+        haloMat,
+        rangeMat,
+        spireMat,
+        coneMat,
+        sightBeamMat,
+        arrowMat
+      }
     };
 
     // Raycasting for Double-Tap / Long-Press on 3D Mountain
@@ -1099,7 +1364,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
                   label: shortLabel,
                   sub: cleanSub,
                   emoji: stStyle.emoji,
-                  color: stStyle.color,
+                  color: resolvePoiBadgeAccent(poi.category, st.palette || 'slate'),
                   x: sx,
                   y: sy,
                   isLocked,
@@ -1182,19 +1447,30 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     ctx.terrainMesh.geometry.computeVertexNormals();
   }, [dataset, verticalScale]);
 
-  // 3. Switch 3D Terrain Skin (Tactical ATAK / Topo / Satellite Hybrid / Night Recon)
+  // 3. Switch 3D Terrain Skin & Spec-Ops Palette (Slate / Olive / Amber / Vivid)
   useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
     let cancelled = false;
 
+    const ov = getMapOverlayPalette(palette);
+    ctx.playerMaterials.coreMat.color.setHex(ov.playerCoreNum);
+    ctx.playerMaterials.haloMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.rangeMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.spireMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.coneMat.color.setHex(ov.primaryNum);
+    ctx.playerMaterials.sightBeamMat.color.setHex(ov.playerCoreNum);
+    ctx.playerMaterials.arrowMat.color.setHex(ov.arrowNum);
+
     if (skin === 'tactical') {
-      if (!ctx.tacticalTexture) {
-        const c = buildProceduralTerrainCanvas(dataset, 'tactical');
+      if (!ctx.tacticalTexture || ctx.tacticalPalette !== palette) {
+        ctx.tacticalTexture?.dispose();
+        const c = buildProceduralTerrainCanvas(dataset, 'tactical', palette);
         const tex = new THREE.CanvasTexture(c);
         tex.colorSpace = THREE.SRGBColorSpace;
         tex.anisotropy = Math.min(8, ctx.renderer.capabilities.getMaxAnisotropy());
         ctx.tacticalTexture = tex;
+        ctx.tacticalPalette = palette;
       }
       ctx.terrainMesh.material.map = ctx.tacticalTexture;
       ctx.terrainMesh.material.needsUpdate = true;
@@ -1243,7 +1519,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [dataset, skin]);
+  }, [dataset, skin, palette]);
 
   // 4. Rebuild Draped 3D Trails, Color Routes, Streams, 220kV Corridor, Geofence Force-Fields, and GPX
   useEffect(() => {
@@ -1279,54 +1555,66 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       }
     };
 
+    const ov = getMapOverlayPalette(palette);
+
     // Streams in 3D valleys (clipped cleanly to 3D mountain plinth)
     for (const s of dataset.streams) {
-      addDrapedPolylineClipped(s.coords, '#38BDF8', 2.5, 0.78, 35);
+      addDrapedPolylineClipped(s.coords, ov.stream, 2.5, ov.streamOpacity, 35);
     }
 
     // 220kV High-Voltage Powerline Corridor (clipped to plinth & subdivided every 35m over ridges!)
     if (dataset.powerlines) {
       for (const pl of dataset.powerlines) {
-        addDrapedPolylineClipped(pl.coords, '#C084FC', 14.0, 0.55, 35);
+        addDrapedPolylineClipped(pl.coords, ov.power, 14.0, ov.powerOpacity, 35);
       }
     }
 
     // All 281 forest footpaths
     if (showAllTrails) {
+      const trailCol =
+        palette !== 'vivid'
+          ? '#64748B'
+          : skin === 'night'
+            ? '#34D399'
+            : skin === 'tactical'
+              ? '#7DD3FC'
+              : '#E2E8F0';
+      const trailOp = palette !== 'vivid' ? 0.28 : skin === 'tactical' ? 0.38 : 0.45;
       for (const t of dataset.trails) {
         if (t.routes.length > 0) continue; // drawn brighter by routes below
-        addDrapedPolylineClipped(
-          t.coords,
-          skin === 'night' ? '#34D399' : skin === 'tactical' ? '#7DD3FC' : '#E2E8F0',
-          3.5,
-          skin === 'tactical' ? 0.38 : 0.45,
-          40
-        );
+        addDrapedPolylineClipped(t.coords, trailCol, 3.5, trailOp, 40);
       }
     }
 
-    // 4 Official Color-Coded Routes (Red, Yellow, Blue, Green) - drawn as thick glowing double-ribbons
+    // 4 Official Color-Coded Routes (Red, Yellow, Blue, Green)
     for (const r of dataset.routes) {
       if (visibleRoutes[r.id] === false) continue;
+      const routeCol = resolveRouteColor(r.id, r.color, palette);
       for (const seg of r.segments) {
-        addDrapedPolylineClipped(seg, r.color, 6.5, 1.0, 35);
-        addDrapedPolylineClipped(seg, r.color, 8.2, 0.7, 35);
+        addDrapedPolylineClipped(seg, routeCol, 6.5, palette === 'vivid' ? 0.95 : 0.85, 35);
+        addDrapedPolylineClipped(seg, routeCol, 8.2, palette === 'vivid' ? 0.65 : 0.52, 35);
       }
     }
 
     // Imported GPX Routes
     for (const gpx of importedGpx) {
       const coords = gpx.points.map(([lat, lon]) => [lat, lon] as [number, number]);
-      addDrapedPolylineClipped(coords, gpx.color, 9.5, 1.0, 35);
+      addDrapedPolylineClipped(coords, gpx.color, 9.5, 0.9, 35);
     }
 
-    // 3D Crimson Force-Field Walls around Military Shooting Range & Deep Quarries
-    // (Sutherland-Hodgman clipped to 3D plinth & subdivided every 45m so 2.8km spans never tunnel underground!)
+    // 3D Force-Field Walls around Military Shooting Range & Deep Quarries
     for (const h of dataset.hazards) {
       const clippedPoly = clipAndSubdividePolygonToBounds(h.coords, dataset.bounds, 45);
       if (clippedPoly.length < 3) continue;
       const wallHeight = h.kind === 'military' ? 145 : 85;
-      const wallColor = h.kind === 'military' ? 0xff2d55 : 0xff9f0a;
+      const wallColor =
+        palette === 'vivid' ? (h.kind === 'military' ? 0xff2d55 : 0xff9f0a) : ov.hazardNum;
+      const wallHex =
+        palette === 'vivid'
+          ? h.kind === 'military'
+            ? ov.hazardHex
+            : ov.hazardQuarryHex
+          : ov.hazardHex;
       const positions: number[] = [];
 
       for (let i = 0; i < clippedPoly.length - 1; i++) {
@@ -1347,16 +1635,16 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const wallMat = new THREE.MeshBasicMaterial({
         color: wallColor,
         transparent: true,
-        opacity: 0.24,
+        opacity: ov.hazardWallOpacity,
         side: THREE.DoubleSide,
         depthWrite: false
       });
       grp.add(new THREE.Mesh(wallGeo, wallMat));
 
-      addDrapedPolylineClipped(clippedPoly, h.kind === 'military' ? '#FF2D55' : '#FF9F0A', wallHeight, 0.95, 50);
+      addDrapedPolylineClipped(clippedPoly, wallHex, wallHeight, ov.hazardLineOpacity, 50);
     }
 
-    // 3D Crimson Hazard Beacons at all 10 Verified Danger Points + Cyan Rings at 5 Trail Junctions!
+    // Hazard Beacons & Trail Junction Rings
     for (const poi of dataset.pois) {
       if (poi.category === 'warning') {
         const [hx, hy, hz] = latLonToWorld3D(poi.lat, poi.lon, poi.ele, dataset.bounds, verticalScale);
@@ -1364,9 +1652,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         ringGeo.rotateX(-Math.PI / 2);
         ringGeo.translate(hx, hy + 4.5, hz);
         const ringMat = new THREE.MeshBasicMaterial({
-          color: 0xff3b30,
+          color: ov.warningNum,
           transparent: true,
-          opacity: 0.78,
+          opacity: palette === 'vivid' ? 0.78 : 0.5,
           side: THREE.DoubleSide
         });
         grp.add(new THREE.Mesh(ringGeo, ringMat));
@@ -1374,9 +1662,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         const beamGeo = new THREE.CylinderGeometry(1.8, 7, 56, 8);
         beamGeo.translate(hx, hy + 28, hz);
         const beamMat = new THREE.MeshBasicMaterial({
-          color: 0xff3b30,
+          color: ov.warningNum,
           transparent: true,
-          opacity: 0.48
+          opacity: palette === 'vivid' ? 0.48 : 0.28
         });
         grp.add(new THREE.Mesh(beamGeo, beamMat));
       } else if (poi.category === 'junction') {
@@ -1385,15 +1673,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         jRingGeo.rotateX(-Math.PI / 2);
         jRingGeo.translate(jx, jy + 5, jz);
         const jRingMat = new THREE.MeshBasicMaterial({
-          color: 0x22d3ee,
+          color: ov.junctionNum,
           transparent: true,
-          opacity: 0.85,
+          opacity: palette === 'vivid' ? 0.85 : 0.52,
           side: THREE.DoubleSide
         });
         grp.add(new THREE.Mesh(jRingGeo, jRingMat));
       }
     }
-  }, [dataset, verticalScale, visibleRoutes, showAllTrails, importedGpx, skin]);
+  }, [dataset, verticalScale, visibleRoutes, showAllTrails, importedGpx, skin, palette]);
 
   // 5. Render 3D Beacon Pillars for User Pins ("Ghim Cục Đá / 💩")
   useEffect(() => {
@@ -1442,19 +1730,22 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const [x, y, z] = latLonToWorld3D(tp.lat, tp.lon, groundEle, dataset.bounds, verticalScale);
       return new THREE.Vector3(x, y + 7.5, z);
     });
+    const ov = getMapOverlayPalette(palette);
     const curveGeo = new THREE.BufferGeometry().setFromPoints(pts);
-    const curveMat = new THREE.LineBasicMaterial({ color: 0x00f5d4 });
+    const curveMat = new THREE.LineBasicMaterial({ color: ov.playerCoreNum });
     grp.add(new THREE.Line(curveGeo, curveMat));
-  }, [dataset, trackPoints, verticalScale]);
+  }, [dataset, trackPoints, verticalScale, palette]);
 
-  // 7. Render 3D Golden Parabolic Homing Arc + Terrain Line to Locked Target + Cyan Locked Compass Bearing Ray!
+  // 7. Render 3D Parabolic Homing Arc + Terrain Line to Locked Target + Locked Compass Bearing Ray
   useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
     const grp = ctx.targetArcGroup;
     clearAndDisposeGroup(grp);
 
-    // A. Locked Sighting Compass Ray (1,200m Cyan Line draped over 3D mountain ridges & clipped to plinth)
+    const ov = getMapOverlayPalette(palette);
+
+    // A. Locked Sighting Compass Ray (1,200m Line draped over 3D mountain ridges & clipped to plinth)
     if (lockedBearing !== null) {
       const rayEnd = projectPointByBearing(playerLat, playerLon, lockedBearing, 1200);
       const rayRuns = clipAndSubdividePolylineToBounds(
@@ -1473,7 +1764,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           return new THREE.Vector3(rx, ry + 8.5, rz);
         });
         const rayGeo = new THREE.BufferGeometry().setFromPoints(rayPts);
-        const rayMat = new THREE.LineBasicMaterial({ color: 0x00f5d4 });
+        const rayMat = new THREE.LineBasicMaterial({ color: ov.playerCoreNum });
         grp.add(new THREE.Line(rayGeo, rayMat));
       }
     }
@@ -1499,7 +1790,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       new THREE.Vector3(tx, ty + 20, tz)
     );
     const arcGeo = new THREE.BufferGeometry().setFromPoints(curve.getPoints(42));
-    const arcMat = new THREE.LineBasicMaterial({ color: 0xffd60a });
+    const arcMat = new THREE.LineBasicMaterial({ color: ov.arcNum });
     grp.add(new THREE.Line(arcGeo, arcMat));
 
     // 2. Draped Ground Slope Line (shows exact terrain profile between you and target!)
@@ -1515,12 +1806,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     }
     const groundGeo = new THREE.BufferGeometry().setFromPoints(groundPts);
     const groundMat = new THREE.LineBasicMaterial({
-      color: 0xff9f0a,
+      color: ov.groundArcNum,
       transparent: true,
       opacity: 0.72
     });
     grp.add(new THREE.Line(groundGeo, groundMat));
-  }, [dataset, lockedTarget, lockedBearing, playerLat, playerLon, playerEle, verticalScale]);
+  }, [dataset, lockedTarget, lockedBearing, playerLat, playerLon, playerEle, verticalScale, palette]);
 
   // 8. Fly Camera Smoothly to Requested Coordinate
   useEffect(() => {
@@ -1640,8 +1931,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             viewBox="0 0 24 24"
             style={{ transform: `rotate(${-camAzimuthDeg}deg)` }}
           >
-            <polygon points="12,2 8.5,12 15.5,12" fill="#FF3B30" />
-            <polygon points="12,22 8.5,12 15.5,12" fill="#CBD5E1" />
+            <polygon points="12,2 8.5,12 15.5,12" fill="#C26D68" />
+            <polygon points="12,22 8.5,12 15.5,12" fill="#94A3B8" />
           </svg>
           <span>{headingUp ? 'H-UP' : 'BẮC'}</span>
         </button>

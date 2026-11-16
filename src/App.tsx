@@ -6,6 +6,7 @@ import type {
   Map2DStyle,
   NuiDinhDataset,
   SafetyAlert,
+  TacticalPalette,
   TacticalTarget,
   Terrain3DSkin,
   TrackPoint,
@@ -27,11 +28,13 @@ import {
   applyOtaBundle,
   checkGithubOtaUpdate,
   confirmOtaBootSuccess,
+  getCurrentOtaRuntimeInfo,
+  isRemoteNewer,
   loadOtaSettings,
   type AvailableOtaUpdate
 } from './utils/otaUpdater';
 import { APP_BUILD_INFO } from './version';
-import { Terrain3DView } from './components/Terrain3DView';
+import { resolveRouteColor, Terrain3DView } from './components/Terrain3DView';
 import { Hybrid2DMap } from './components/Hybrid2DMap';
 import {
   PIN_CATEGORIES,
@@ -53,6 +56,14 @@ function formatSpecOpsClock(d = new Date()): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+const PALETTE_ORDER: TacticalPalette[] = ['slate', 'olive', 'amber', 'vivid'];
+const PALETTE_META: Record<TacticalPalette, { short: string; label: string }> = {
+  slate: { short: 'XÁM', label: 'Xám Đặc Nhiệm (Ít màu)' },
+  olive: { short: 'RÊU', label: 'Rêu Quân Sự' },
+  amber: { short: 'ĐÊM', label: 'Đêm Hổ Phách' },
+  vivid: { short: 'GỐC', label: 'Đa Sắc (4 Tuyến)' }
+};
+
 const SIM_PRESETS = [
   { id: 'hbs', label: '⛺ Hồ Bên Suối Dinh', lat: 10.51615, lon: 107.11735 },
   { id: 'suoida', label: '🌊 Suối Đá Thác Hạ', lat: 10.518913, lon: 107.119888 },
@@ -73,6 +84,11 @@ export const App: React.FC = () => {
   const [map2DStyle, setMap2DStyle] = useState<Map2DStyle>('google-hybrid');
   const [headingUp, setHeadingUp] = useState<boolean>(false);
   const [tacticalTone2D, setTacticalTone2D] = useState<boolean>(true);
+  const [palette, setPalette] = useState<TacticalPalette>(() => {
+    if (typeof window === 'undefined') return 'slate';
+    const saved = localStorage.getItem('dinh_tactical_palette_v1') as TacticalPalette | null;
+    return saved && ['slate', 'olive', 'amber', 'vivid'].includes(saved) ? saved : 'slate';
+  });
   const [showAllTrails, setShowAllTrails] = useState<boolean>(true);
   const [showPois, setShowPois] = useState<boolean>(true);
   const [visibleRoutes, setVisibleRoutes] = useState<Record<string, boolean>>({
@@ -143,6 +159,8 @@ export const App: React.FC = () => {
   syntheticLandscapeRef.current = syntheticLandscape;
   const [dismissedPortraitHint, setDismissedPortraitHint] = useState<boolean>(false);
   const [dismissedQuickOta, setDismissedQuickOta] = useState<boolean>(false);
+  const [dismissedApkNudge, setDismissedApkNudge] = useState<boolean>(false);
+  const [nativeApkVer, setNativeApkVer] = useState<string | null>(null);
   const [quickOtaProgress, setQuickOtaProgress] = useState<number | null>(null);
   const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
   const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
@@ -186,7 +204,10 @@ export const App: React.FC = () => {
     syncViewportState();
     tryLockLandscape();
 
-    const onFirstPointerDown = () => tryLockLandscape();
+    const onFirstPointerDown = () => {
+      tryLockLandscape();
+      document.documentElement.requestFullscreen?.({ navigationUI: 'hide' }).catch(() => {});
+    };
     window.addEventListener('pointerdown', onFirstPointerDown, { once: true });
     window.addEventListener('resize', syncViewportState);
     window.addEventListener('orientationchange', syncViewportState);
@@ -219,6 +240,25 @@ export const App: React.FC = () => {
       window.removeEventListener('pointerdown', resetIdle);
     };
   }, []);
+
+  const handleSelectPalette = useCallback(
+    (next: TacticalPalette) => {
+      setPalette(next);
+      try {
+        localStorage.setItem('dinh_tactical_palette_v1', next);
+      } catch {
+        // ignore storage failures
+      }
+      triggerToast(`🎨 Tông màu: ${PALETTE_META[next].label}`);
+    },
+    [triggerToast]
+  );
+
+  const handleCyclePalette = useCallback(() => {
+    const idx = PALETTE_ORDER.indexOf(palette);
+    const next = PALETTE_ORDER[(idx + 1) % PALETTE_ORDER.length];
+    handleSelectPalette(next);
+  }, [palette, handleSelectPalette]);
 
   const handleToggleForceLandscape = useCallback(() => {
     type LockableOrientation = ScreenOrientation & {
@@ -265,9 +305,16 @@ export const App: React.FC = () => {
     }
   }, [availableOta, quickOtaProgress, triggerToast]);
 
-  // 1. Confirm OTA watchdog ready & load Offline Session from IndexedDB on Startup
+  // 1. Confirm OTA watchdog ready, inspect native APK version & load Offline Session
   useEffect(() => {
     confirmOtaBootSuccess();
+    getCurrentOtaRuntimeInfo()
+      .then((info) => {
+        if (info.isNative) {
+          setNativeApkVer(info.nativeApkVersion);
+        }
+      })
+      .catch(() => {});
     loadPersistedSession()
       .then(({ pins, track, gpxList, lockedTarget: savedTarget, lockedBearing: savedBearing }) => {
         if (pins.length > 0) setUserPins(pins);
@@ -727,6 +774,7 @@ export const App: React.FC = () => {
 
   return (
     <div
+      data-palette={palette}
       className={`app-shell ${syntheticLandscape ? 'synthetic-landscape' : ''} ${
         isMapDragging ? 'hud-dragging' : isHudIdle ? 'hud-idle' : ''
       }`}
@@ -827,6 +875,15 @@ export const App: React.FC = () => {
 
             <button
               type="button"
+              className="hud-icon-btn"
+              onClick={handleCyclePalette}
+              title="Đổi tông màu Đặc Nhiệm (Giảm màu mè)"
+            >
+              MÀU:{PALETTE_META[palette].short}
+            </button>
+
+            <button
+              type="button"
               className={`hud-icon-btn ${headingUp ? 'active' : ''}`}
               onClick={handleToggleHeadingUp}
               title={
@@ -835,29 +892,16 @@ export const App: React.FC = () => {
                   : 'Bật xoay bản đồ theo hướng điện thoại (Heading-Up)'
               }
             >
-              🧭
+              {headingUp ? 'H-UP' : 'BẮC'}
             </button>
 
             <button
               type="button"
               className={`hud-icon-btn ${showLayerPopover ? 'active' : ''}`}
               onClick={() => setShowLayerPopover((v) => !v)}
-              title="Bật/tắt lớp địa hình, vệ tinh & 4 tuyến trail"
+              title="Chọn tông màu, lớp địa hình & 4 tuyến trail"
             >
-              🎛️<span className="hide-narrow-txt"> Lớp</span>
-            </button>
-
-            <button
-              type="button"
-              className={`hud-icon-btn ${forceLandscape ? 'active' : ''}`}
-              onClick={handleToggleForceLandscape}
-              title={
-                forceLandscape
-                  ? 'Đang mặc định nằm ngang (Chạm để mở xoay dọc)'
-                  : 'Bấm để xoay ngang toàn màn hình'
-              }
-            >
-              ↔️
+              LỚP
             </button>
 
             <button
@@ -866,13 +910,37 @@ export const App: React.FC = () => {
               onClick={() => setZenMode((v) => !v)}
               title={zenMode ? 'Hiện lại thanh chỉ số HUD' : 'Thu gọn tối đa HUD (Sạch bản đồ)'}
             >
-              {zenMode ? '👁️‍🗨️' : '👁️'}
+              {zenMode ? 'HUD' : 'ẨN'}
             </button>
           </div>
         </div>
 
         {/* CENTERED NARROW SUB-PILLS (Only shown when active) */}
         <div className="hud-sub-pills">
+          {nativeApkVer && isRemoteNewer('1.0.6', nativeApkVer) && !dismissedApkNudge && (
+            <div className="ota-quick-pill apk-nudge-pill">
+              <a
+                href={
+                  apkReleaseUrl ||
+                  'https://github.com/hongphuc120399-netizen/dinh-ops-3d/releases/download/apk-v1.0.6/dinh-ops-3d.apk'
+                }
+                target="_blank"
+                rel="noreferrer"
+                className="ota-quick-act"
+                title="Cài đè APK mới để kích hoạt ẩn 2 viền đen/trắng hệ thống (không mất dữ liệu)"
+              >
+                📲 Vỏ APK v{nativeApkVer} còn 2 viền — Bấm tải APK v1.0.6 để ẩn hẳn
+              </a>
+              <button
+                type="button"
+                className="pill-x"
+                onClick={() => setDismissedApkNudge(true)}
+                title="Tạm ẩn nhắc nhở"
+              >
+                ✕
+              </button>
+            </div>
+          )}
           {availableOta && !dismissedQuickOta && (
             <div className="ota-quick-pill">
               <button
@@ -977,6 +1045,22 @@ export const App: React.FC = () => {
           <div className="popover-click-catcher" onClick={() => setShowLayerPopover(false)} />
           <div className="layer-popover-panel">
           <div className="pop-section">
+            <span className="pop-label">Tông màu Giao diện &amp; Bản đồ (Giảm màu mè)</span>
+            <div className="chip-row">
+              {PALETTE_ORDER.map((pKey) => (
+                <button
+                  key={pKey}
+                  type="button"
+                  className={palette === pKey ? 'active' : ''}
+                  onClick={() => handleSelectPalette(pKey)}
+                >
+                  {PALETTE_META[pKey].label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="pop-section">
             <span className="pop-label">Bề mặt Địa hình 3D (Three.js)</span>
             <div className="chip-row">
               <button
@@ -1033,6 +1117,13 @@ export const App: React.FC = () => {
               >
                 ⛰️ Độ nổi {verticalScale.toFixed(1)}x
               </button>
+              <button
+                type="button"
+                className={forceLandscape ? 'active' : ''}
+                onClick={handleToggleForceLandscape}
+              >
+                {forceLandscape ? '↔️ Khóa Nằm Ngang' : '📱 Xoay Theo Máy'}
+              </button>
             </div>
           </div>
 
@@ -1082,19 +1173,22 @@ export const App: React.FC = () => {
           <div className="pop-section">
             <span className="pop-label">4 Tuyến Trail Chuẩn & 281 Đường Mòn Rừng</span>
             <div className="chip-row">
-              {dataset.routes.map((r) => (
-                <button
-                  key={r.id}
-                  type="button"
-                  className={visibleRoutes[r.id] !== false ? 'active' : ''}
-                  style={{ borderColor: r.color }}
-                  onClick={() =>
-                    setVisibleRoutes((prev) => ({ ...prev, [r.id]: prev[r.id] === false }))
-                  }
-                >
-                  <span style={{ color: r.color }}>●</span> {r.shortLabel}
-                </button>
-              ))}
+              {dataset.routes.map((r) => {
+                const chipCol = resolveRouteColor(r.id, r.color, palette);
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className={visibleRoutes[r.id] !== false ? 'active' : ''}
+                    style={{ borderColor: chipCol }}
+                    onClick={() =>
+                      setVisibleRoutes((prev) => ({ ...prev, [r.id]: prev[r.id] === false }))
+                    }
+                  >
+                    <span style={{ color: chipCol }}>●</span> {r.shortLabel}
+                  </button>
+                );
+              })}
               <button
                 type="button"
                 className={showAllTrails ? 'active' : ''}
@@ -1143,6 +1237,7 @@ export const App: React.FC = () => {
               isSimMode={isSimMode}
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
+              palette={palette}
               onToggleHeadingUp={handleToggleHeadingUp}
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
@@ -1179,6 +1274,7 @@ export const App: React.FC = () => {
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
               tacticalTone={tacticalTone2D}
+              palette={palette}
               onToggleHeadingUp={handleToggleHeadingUp}
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}

@@ -129,3 +129,4 @@ export type ViewMode = '3d' | 'split' | '2d';
 export type Terrain3DSkin = 'tactical' | 'topo' | 'satellite' | 'night';
 export type Camera3DMode = 'orbit' | 'chase';
 export type Map2DStyle = 'google-hybrid' | 'google-terrain' | 'opentopo' | 'offline-vector';
+export type TacticalPalette = 'slate' | 'olive' | 'amber' | 'vivid';
