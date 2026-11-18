@@ -17,6 +17,11 @@ export interface RadialSpotState {
   dragY: number;
   activeSector: RadialActionId | null;
   pointerActive: boolean;
+  title?: string;
+  targetId?: string;
+  category?: string;
+  note?: string;
+  photoDataUrl?: string;
 }
 
 interface TacticalRadialWheelProps {
@@ -183,6 +188,11 @@ export const TacticalRadialWheel: React.FC<TacticalRadialWheelProps> = ({
   const ptrY = 124 + spot.dragY * clampedScale;
 
   const activeCfg = sectors.find((s) => s.id === spot.activeSector) || null;
+  const shortTitle = spot.title
+    ? spot.title.length > 24
+      ? `${spot.title.slice(0, 23).trimEnd()}…`
+      : spot.title
+    : null;
 
   return (
     <div
@@ -210,6 +220,12 @@ export const TacticalRadialWheel: React.FC<TacticalRadialWheelProps> = ({
       >
         {/* Top live telemetry pill above wheel */}
         <div className="radial-tele-badge">
+          {shortTitle && (
+            <>
+              <strong style={{ color: theme.accent }}>{shortTitle}</strong>
+              <span className="radial-tele-sep">•</span>
+            </>
+          )}
           <span>
             ⛰️ <strong>{spot.ele}m</strong>
             {spot.slope > 0 ? (

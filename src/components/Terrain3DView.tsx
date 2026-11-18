@@ -67,7 +67,7 @@ interface Terrain3DViewProps {
   onSelectUserPin: (pin: UserPin) => void;
   onRequestPinAt: (lat: number, lon: number, ele: number) => void;
   onSimMoveTo: (lat: number, lon: number) => void;
-  onStartGtaRoute: (lat: number, lon: number, ele: number) => void;
+  onStartGtaRoute: (lat: number, lon: number, ele: number, customName?: string) => void;
 }
 
 interface ProjectedBadge {
@@ -785,7 +785,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     if (navigator.vibrate) navigator.vibrate(24);
 
     if (action === 'navigate-gta') {
-      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele);
+      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele, spot.title);
     } else if (action === 'pin-here') {
       cb.onRequestPinAt(spot.lat, spot.lon, spot.ele);
     } else if (action === 'fly-move') {
@@ -801,12 +801,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       }
     } else if (action === 'lock-radar') {
       cb.onSelectTarget({
-        id: `spot-${Date.now()}`,
-        name: `Điểm 3D (${spot.ele}m)`,
+        id: spot.targetId || `spot-${Date.now()}`,
+        name: spot.title || `Điểm 3D (${spot.ele}m)`,
         lat: spot.lat,
         lon: spot.lon,
         ele: spot.ele,
-        category: 'checkpoint'
+        category: spot.category || 'checkpoint',
+        note: spot.note,
+        photoDataUrl: spot.photoDataUrl
       });
     }
 
@@ -816,6 +818,51 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       sceneRef.current.inspectMarker.visible = false;
     }
   }, [dataset]);
+
+  const openRadialFromBadge = useCallback(
+    (b: ProjectedBadge) => {
+      const container = containerRef.current;
+      const viewW = container?.clientWidth || window.innerWidth;
+      const viewH = container?.clientHeight || window.innerHeight;
+      const padX = Math.min(132, Math.max(96, viewW * 0.25));
+      const padY = Math.min(136, Math.max(100, viewH * 0.34));
+
+      const item = b.pinRef || b.poiRef;
+      if (!item) return;
+
+      const slope = Math.round(sampleDemSlopeDeg(dataset.dem, dataset.bounds, item.lat, item.lon));
+      if (sceneRef.current) {
+        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, item.lat, item.lon);
+        const [wx, wy, wz] = latLonToWorld3D(item.lat, item.lon, groundEle, dataset.bounds, verticalScale);
+        sceneRef.current.inspectMarker.position.set(wx, wy + 5, wz);
+        sceneRef.current.inspectMarker.visible = true;
+      }
+
+      if (navigator.vibrate) navigator.vibrate(15);
+      const nextSpot: RadialSpotState = {
+        lat: Number(item.lat.toFixed(6)),
+        lon: Number(item.lon.toFixed(6)),
+        ele: item.ele,
+        slope,
+        screenX: Math.min(viewW - padX, Math.max(padX, b.x)),
+        screenY: Math.min(viewH - padY, Math.max(padY, b.y)),
+        originX: b.x,
+        originY: b.y,
+        dragX: 0,
+        dragY: 0,
+        activeSector: null,
+        pointerActive: false,
+        title: item.name,
+        targetId: item.id,
+        category: item.category,
+        note: item.note,
+        photoDataUrl: b.pinRef?.photoDataUrl
+      };
+      radialSpotRef.current = nextSpot;
+      setRadialSpot(nextSpot);
+    },
+    [dataset, verticalScale]
+  );
 
   useEffect(() => {
     const timer = window.setTimeout(() => setShowGestureHint(false), 3500);
@@ -2524,20 +2571,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             }
             onPointerDown={(e) => {
               e.stopPropagation();
-              if (navigator.vibrate) navigator.vibrate(12);
-              if (b.pinRef) {
-                onSelectUserPin(b.pinRef);
-              } else if (b.poiRef) {
-                onSelectTarget({
-                  id: b.poiRef.id,
-                  name: b.poiRef.name,
-                  lat: b.poiRef.lat,
-                  lon: b.poiRef.lon,
-                  ele: b.poiRef.ele,
-                  category: b.poiRef.category,
-                  note: b.poiRef.note
-                });
-              }
+            }}
+            onClick={(e) => {
+              e.stopPropagation();
+              openRadialFromBadge(b);
             }}
           >
             {b.isUserPin ? (

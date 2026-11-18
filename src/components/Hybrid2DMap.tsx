@@ -52,7 +52,7 @@ interface Hybrid2DMapProps {
   onSelectUserPin: (pin: UserPin) => void;
   onRequestPinAt: (lat: number, lon: number, ele: number) => void;
   onSimMoveTo: (lat: number, lon: number) => void;
-  onStartGtaRoute: (lat: number, lon: number, ele: number) => void;
+  onStartGtaRoute: (lat: number, lon: number, ele: number, customName?: string) => void;
 }
 
 const PIN_EMOJI: Record<PinCategory, string> = {
@@ -243,7 +243,7 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
     const cb = callbacksRef.current;
     if (navigator.vibrate) navigator.vibrate(24);
     if (action === 'navigate-gta') {
-      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele);
+      cb.onStartGtaRoute(spot.lat, spot.lon, spot.ele, spot.title);
     } else if (action === 'pin-here') {
       cb.onRequestPinAt(spot.lat, spot.lon, spot.ele);
     } else if (action === 'fly-move') {
@@ -254,17 +254,74 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       }
     } else if (action === 'lock-radar') {
       cb.onSelectTarget({
-        id: `spot2d-${Date.now()}`,
-        name: `Điểm 2D (${spot.ele}m)`,
+        id: spot.targetId || `spot2d-${Date.now()}`,
+        name: spot.title || `Điểm 2D (${spot.ele}m)`,
         lat: spot.lat,
         lon: spot.lon,
         ele: spot.ele,
-        category: 'checkpoint'
+        category: spot.category || 'checkpoint',
+        note: spot.note,
+        photoDataUrl: spot.photoDataUrl
       });
     }
     setRadialSpot(null);
     radialSpotRef.current = null;
   }, []);
+
+  const openRadialFromMarker2D = useCallback(
+    (
+      e: L.LeafletMouseEvent,
+      item: {
+        id: string;
+        name: string;
+        lat: number;
+        lon: number;
+        ele: number;
+        category: string;
+        note?: string;
+        photoDataUrl?: string;
+      }
+    ) => {
+      L.DomEvent.stopPropagation(e);
+      const wrapper = wrapperRef.current;
+      const viewW = wrapper?.clientWidth || window.innerWidth;
+      const viewH = wrapper?.clientHeight || window.innerHeight;
+      let localX = viewW * 0.5;
+      let localY = viewH * 0.5;
+      const orig = e.originalEvent as MouseEvent | undefined;
+      if (wrapper && orig && typeof orig.clientX === 'number' && typeof orig.clientY === 'number' && (orig.clientX !== 0 || orig.clientY !== 0)) {
+        const wRect = wrapper.getBoundingClientRect();
+        localX = syntheticLandscapeRef.current ? orig.clientY - wRect.top : orig.clientX - wRect.left;
+        localY = syntheticLandscapeRef.current ? wRect.right - orig.clientX : orig.clientY - wRect.top;
+      }
+
+      if (navigator.vibrate) navigator.vibrate(15);
+      const padX = Math.min(132, Math.max(96, viewW * 0.25));
+      const padY = Math.min(136, Math.max(100, viewH * 0.34));
+      const nextSpot: RadialSpotState = {
+        lat: Number(item.lat.toFixed(6)),
+        lon: Number(item.lon.toFixed(6)),
+        ele: item.ele,
+        slope: 0,
+        screenX: Math.min(viewW - padX, Math.max(padX, localX)),
+        screenY: Math.min(viewH - padY, Math.max(padY, localY)),
+        originX: localX,
+        originY: localY,
+        dragX: 0,
+        dragY: 0,
+        activeSector: null,
+        pointerActive: false,
+        title: item.name,
+        targetId: item.id,
+        category: item.category,
+        note: item.note,
+        photoDataUrl: item.photoDataUrl
+      };
+      radialSpotRef.current = nextSpot;
+      setRadialSpot(nextSpot);
+    },
+    []
+  );
 
   // 1. Initialize Leaflet Map
   useEffect(() => {
@@ -769,23 +826,15 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
               }),
           zIndexOffset: major?.isSummit ? 720 : major ? 480 : 120
         });
-        marker.on('click', () => {
-          onSelectTarget({
-            id: poi.id,
-            name: poi.name,
-            lat: poi.lat,
-            lon: poi.lon,
-            ele: poi.ele,
-            category: poi.category,
-            note: poi.note
-          });
+        marker.on('click', (e: L.LeafletMouseEvent) => {
+          openRadialFromMarker2D(e, poi);
         });
         const accSuffix = poi.accuracyM ? ` • ±${poi.accuracyM}m` : '';
         marker.bindTooltip(`${poi.name} (${poi.ele}m${accSuffix})`);
         marker.addTo(grp);
       }
     }
-  }, [dataset, visibleRoutes, showAllTrails, showPois, importedGpx, palette, onSelectTarget]);
+  }, [dataset, visibleRoutes, showAllTrails, showPois, importedGpx, palette, openRadialFromMarker2D]);
 
   // 4. Render User Dropped Pins ("Cục đá / 💩")
   useEffect(() => {
@@ -805,10 +854,10 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         }),
         zIndexOffset: 600
       });
-      m.on('click', () => onSelectUserPin(pin));
+      m.on('click', (e: L.LeafletMouseEvent) => openRadialFromMarker2D(e, pin));
       m.addTo(grp);
     }
-  }, [userPins, lockedTarget, onSelectUserPin]);
+  }, [userPins, lockedTarget, openRadialFromMarker2D]);
 
   // 5. Update Player Position, Dual-Heading Cone, Tracklog & Target Line
   useEffect(() => {
