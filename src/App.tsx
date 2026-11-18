@@ -62,6 +62,43 @@ function formatSpecOpsClock(d = new Date()): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
+/**
+ * Gimbal-lock-free 3D W3C DeviceOrientation matrix (Z-X'-Y'' intrinsic) projected onto horizontal EN plane.
+ * Keeps compass smooth across Portrait/Landscape tilts from 0° to 90°.
+ */
+function computeTiltCompensatedHeading(
+  alphaDeg: number,
+  betaDeg: number,
+  gammaDeg: number,
+  screenAngleDeg: number
+): number {
+  const degToRad = Math.PI / 180;
+  const a = alphaDeg * degToRad;
+  const b = betaDeg * degToRad;
+  const g = gammaDeg * degToRad;
+  const s = screenAngleDeg * degToRad;
+
+  const ca = Math.cos(a);
+  const sa = Math.sin(a);
+  const cb = Math.cos(b);
+  const sb = Math.sin(b);
+  const cg = Math.cos(g);
+  const sg = Math.sin(g);
+
+  // Device forward vector blending screen-up (+X/+Y depending on orientation) and camera forward (-Z_dev)
+  const vx = Math.sin(s);
+  const vy = Math.cos(s);
+  const vz = -1;
+
+  const east = (ca * cg - sa * sb * sg) * vx + (-sa * cb) * vy + (ca * sg + sa * sb * cg) * vz;
+  const north = (sa * cg + ca * sb * sg) * vx + (ca * cb) * vy + (sa * sg - ca * sb * cg) * vz;
+
+  if (east * east + north * north < 1e-5) {
+    return (((360 - alphaDeg + screenAngleDeg) % 360) + 360) % 360;
+  }
+  return (((Math.atan2(east, north) * 180) / Math.PI) % 360 + 360) % 360;
+}
+
 const PALETTE_ORDER: TacticalPalette[] = ['slate', 'olive', 'amber', 'vivid'];
 const PALETTE_META: Record<TacticalPalette, { short: string; label: string }> = {
   slate: { short: 'XÁM', label: 'Xám Đặc Nhiệm (Ít màu)' },
@@ -706,6 +743,10 @@ export const App: React.FC = () => {
   }, [isSimMode]);
 
   // 3b. Real Hardware Magnetometer & Accelerometer Spirit Level (Android deviceorientationabsolute + iOS webkitCompassHeading)
+  const isSimWalkActiveRef = useRef<boolean>(false);
+  const liveCompassRef = useRef<number>(compassHeading);
+  liveCompassRef.current = compassHeading;
+
   useEffect(() => {
     if (!useRealCompassSensor && isSimMode) {
       setPitchDeg(0);
@@ -726,12 +767,16 @@ export const App: React.FC = () => {
     };
 
     const pushFilteredHeading = (rawDeg: number) => {
+      if (isSimWalkActiveRef.current) {
+        smoothHeadingRef.current = liveCompassRef.current;
+        return;
+      }
       const prev = smoothHeadingRef.current;
       const delta = ((rawDeg - prev + 540) % 360) - 180;
-      const next = (prev + delta * 0.28 + 360) % 360;
+      const next = (prev + delta * 0.16 + 360) % 360;
       smoothHeadingRef.current = next;
-      if (Math.abs(delta) >= 0.35) {
-        setCompassHeading(Math.round(next * 2) / 2);
+      if (Math.abs(((next - liveCompassRef.current + 540) % 360) - 180) >= 1.8) {
+        setCompassHeading(Math.round(next));
       }
     };
 
@@ -739,8 +784,8 @@ export const App: React.FC = () => {
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.alpha !== null && !Number.isNaN(ev.alpha)) {
         hasAbsolute = true;
-        const raw = (360 - ev.alpha + angle) % 360;
-        pushFilteredHeading((raw + 360) % 360);
+        const tilted = computeTiltCompensatedHeading(ev.alpha, ev.beta ?? 0, ev.gamma ?? 0, angle);
+        pushFilteredHeading(tilted);
       }
       if (ev.beta !== null || ev.gamma !== null) {
         const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
@@ -761,8 +806,8 @@ export const App: React.FC = () => {
       if (typeof webkitH === 'number' && !Number.isNaN(webkitH)) {
         pushFilteredHeading((((webkitH + angle) % 360) + 360) % 360);
       } else if (!hasAbsolute && ev.alpha !== null) {
-        const raw = (360 - ev.alpha + angle) % 360;
-        pushFilteredHeading((raw + 360) % 360);
+        const tilted = computeTiltCompensatedHeading(ev.alpha, ev.beta ?? 0, ev.gamma ?? 0, angle);
+        pushFilteredHeading(tilted);
       }
     };
 
@@ -813,15 +858,19 @@ export const App: React.FC = () => {
     setHeadingUp(next);
     if (navigator.vibrate) navigator.vibrate(15);
     if (next) {
-      if (!useRealCompassSensor) {
+      if (!isSimMode && !useRealCompassSensor) {
         void handleToggleRealCompass(true);
       } else {
-        triggerToast('🧭 Đang xoay bản đồ theo hướng điện thoại (Heading-Up)');
+        triggerToast(
+          isSimMode
+            ? '🧭 Đã bật H-UP theo hướng Giả lập (Chỉnh thanh La bàn trong TEST để xoay)'
+            : '🧭 Đang xoay bản đồ theo hướng điện thoại (Heading-Up)'
+        );
       }
     } else {
       triggerToast('⬆️ Đã khóa bản đồ chuẩn hướng Bắc');
     }
-  }, [headingUp, useRealCompassSensor, handleToggleRealCompass, triggerToast]);
+  }, [headingUp, isSimMode, useRealCompassSensor, handleToggleRealCompass, triggerToast]);
 
   // 4. Simulator Walk Engine (Walk along Red Route or toward clicked target!)
   const simDestRef = useRef<{ lat: number; lon: number } | null>(null);
@@ -858,6 +907,8 @@ export const App: React.FC = () => {
 
   const simMoveIntervalRef = useRef<number | null>(null);
   const simRouteWalkIntervalRef = useRef<number | null>(null);
+  isSimWalkActiveRef.current =
+    isSimMode && (simAutoWalk || simRouteWalking || simMoveIntervalRef.current !== null);
 
   const stopSimWalks = useCallback(() => {
     if (simMoveIntervalRef.current) {

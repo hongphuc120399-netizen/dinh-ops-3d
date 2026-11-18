@@ -1559,8 +1559,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         const horizDist = Math.max(80, Math.hypot(offX, offZ));
         const curAzDeg = ((Math.atan2(-offX, offZ) * 180) / Math.PI + 360) % 360;
         const deltaAz = ((st.compassHeading - curAzDeg + 540) % 360) - 180;
-        if (Math.abs(deltaAz) > 0.12) {
-          const nextAzRad = ((curAzDeg + deltaAz * 0.18) * Math.PI) / 180;
+        if (Math.abs(deltaAz) > 0.8) {
+          const nextAzRad = ((curAzDeg + deltaAz * 0.14) * Math.PI) / 180;
           camera.position.x = controls.target.x - Math.sin(nextAzRad) * horizDist;
           camera.position.z = controls.target.z + Math.cos(nextAzRad) * horizDist;
         }
