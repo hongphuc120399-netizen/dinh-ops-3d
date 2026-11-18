@@ -179,6 +179,7 @@ export const App: React.FC = () => {
   const [nativeApkVer, setNativeApkVer] = useState<string | null>(null);
   const [quickOtaProgress, setQuickOtaProgress] = useState<number | null>(null);
   const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
+  const [dismissedOutGpsHint, setDismissedOutGpsHint] = useState<boolean>(false);
   const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
   const [clockText, setClockText] = useState<string>(() => formatSpecOpsClock());
   const [isMapDragging, setIsMapDragging] = useState<boolean>(false);
@@ -427,6 +428,7 @@ export const App: React.FC = () => {
       if (cancelled) return;
       const dToNuiDinh = haversineDistanceM(lat, lon, LA_BAN_LAT, LA_BAN_LON);
       if (dToNuiDinh <= 15000) {
+        setTrackPoints([]);
         setPlayerLat(lat);
         setPlayerLon(lon);
         setPlayerAccuracy(acc);
@@ -1012,15 +1014,10 @@ export const App: React.FC = () => {
     }
   }, [isSimMode, stopSimWalks]);
 
-  // 5. Record Breadcrumb Tracklog Automatically when Player Moves > 4m
+  // 5. Record Breadcrumb Tracklog Automatically when Player Moves > 4m (ignore > 500m teleport jumps)
   useEffect(() => {
     if (!vaultHydrated || !isRecordingTrack) return;
     setTrackPoints((prev) => {
-      if (prev.length > 0) {
-        const last = prev[prev.length - 1];
-        const dist = haversineDistanceM(last.lat, last.lon, playerLat, playerLon);
-        if (dist < 4.0) return prev;
-      }
       const nextPt: TrackPoint = {
         lat: playerLat,
         lon: playerLon,
@@ -1030,20 +1027,29 @@ export const App: React.FC = () => {
         gpsCourse,
         timestamp: Date.now()
       };
+      if (prev.length > 0) {
+        const last = prev[prev.length - 1];
+        const dist = haversineDistanceM(last.lat, last.lon, playerLat, playerLon);
+        if (dist < 4.0) return prev;
+        if (dist > 500) return [nextPt];
+      }
       return [...prev, nextPt];
     });
   }, [vaultHydrated, playerLat, playerLon, playerEle, playerAccuracy, speedMps, gpsCourse, isRecordingTrack]);
 
-  // Total Tracked Distance
+  // Total Tracked Distance (filter out any legacy > 500m teleport jumps)
   const totalTrackDistanceM = useMemo(() => {
     let sum = 0;
     for (let i = 1; i < trackPoints.length; i++) {
-      sum += haversineDistanceM(
+      const segDist = haversineDistanceM(
         trackPoints[i - 1].lat,
         trackPoints[i - 1].lon,
         trackPoints[i].lat,
         trackPoints[i].lon
       );
+      if (segDist <= 500) {
+        sum += segDist;
+      }
     }
     return sum;
   }, [trackPoints]);
@@ -1435,14 +1441,25 @@ export const App: React.FC = () => {
           )}
 
           {!isSimMode &&
+            !dismissedOutGpsHint &&
             (playerLat < dataset.bounds.south - 0.005 ||
               playerLat > dataset.bounds.north + 0.005 ||
               playerLon < dataset.bounds.west - 0.005 ||
               playerLon > dataset.bounds.east + 0.005) && (
               <div className="out-of-bounds-gps-pill">
-                🛰️ GPS Thật OK (±{Math.round(playerAccuracy ?? 0)}m) • Cách Núi Dinh{' '}
-                {(haversineDistanceM(playerLat, playerLon, 10.53875, 107.12942) / 1000).toFixed(1)} km (Khi
-                tới núi Thứ 7 sẽ khớp trực tiếp lên 3D)
+                <span>
+                  🛰️ GPS Thật OK (±{Math.round(playerAccuracy ?? 0)}m) • Cách Núi Dinh{' '}
+                  {(haversineDistanceM(playerLat, playerLon, 10.53875, 107.12942) / 1000).toFixed(1)} km (Khi
+                  tới núi Thứ 7 sẽ khớp trực tiếp lên 3D)
+                </span>
+                <button
+                  type="button"
+                  className="pill-x"
+                  onClick={() => setDismissedOutGpsHint(true)}
+                  title="Tạm ẩn thông báo GPS ở xa"
+                >
+                  ✕
+                </button>
               </div>
             )}
 
@@ -1770,7 +1787,12 @@ export const App: React.FC = () => {
             <button
               type="button"
               className={isSimMode ? 'active' : ''}
-              onClick={() => setIsSimMode(true)}
+              onClick={() => {
+                setSimAutoWalk(false);
+                setTrackPoints([]);
+                setDismissedOutGpsHint(false);
+                setIsSimMode(true);
+              }}
             >
               🎮 Giả Lập Trên Núi Dinh (Test Web)
             </button>
@@ -1779,6 +1801,8 @@ export const App: React.FC = () => {
               className={!isSimMode ? 'active' : ''}
               onClick={() => {
                 setSimAutoWalk(false);
+                setTrackPoints([]);
+                setDismissedOutGpsHint(false);
                 setIsSimMode(false);
               }}
             >
@@ -1827,6 +1851,8 @@ export const App: React.FC = () => {
                 onClick={() => {
                   if (isSimMode) {
                     setSimAutoWalk(false);
+                    setTrackPoints([]);
+                    setDismissedOutGpsHint(false);
                     setIsSimMode(false);
                   } else {
                     manualGpsRefreshRef.current?.();

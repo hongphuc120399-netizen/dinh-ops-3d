@@ -237,7 +237,9 @@ function formatTacticalCallout(rawName: string, category?: string): string {
     return category === 'warning' ? 'ĐÈO CHÙA TÂY PHƯƠNG' : 'CHÙA TÂY PHƯƠNG';
   }
   if (rawName.includes('Ngã Ba Đường Ống Nước')) return 'BẪY NGÃ 3 ỐNG NƯỚC';
-  if (rawName.includes('Trạm Giao 4 Tuyến')) return 'NGÃ 4 TRUNG TÂM';
+  if (rawName.includes('Ngã Tư Trung Tâm') || rawName.includes('Trạm Giao 4 Tuyến')) return 'NGÃ 4 TRUNG TÂM';
+  if (rawName.includes('Trường Bắn Quân Sự')) return 'CẤM: TRƯỜNG BẮN LAM SƠN';
+  if (rawName.includes('Hồ Đá Xanh')) return 'HỒ ĐÁ XANH';
   if (rawName.includes('Hồ Bên Suối')) return 'HỒ BÊN SUỐI DINH';
   if (rawName.includes('Suối Đá') || rawName.includes('Suối Tiên')) return 'SUỐI ĐÁ • SUỐI TIÊN';
   if (rawName.includes('Cô Kiều')) return 'QUÁN CÔ KIỀU';
@@ -1655,7 +1657,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
               const sx = (tempV.x * 0.5 + 0.5) * w;
               const sy = (-tempV.y * 0.5 + 0.5) * h;
               const safeMarginX = isSummit ? 24 : Math.min(86, w * 0.2);
-              const minY = isSummit ? 24 : 36;
+              const minY = isSummit ? 18 : 76;
               const maxY = isSummit ? h - 28 : h - 42;
               if (sx > safeMarginX && sx < w - safeMarginX && sy > minY && sy < maxY) {
                 const stStyle = POI_STYLE[poi.category] || { emoji: '📍', color: '#94A3B8' };
@@ -1668,7 +1670,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
                   emoji: stStyle.emoji,
                   color: resolvePoiBadgeAccent(poi.category, st.palette || 'slate'),
                   x: sx,
-                  y: sy,
+                  y: isSummit ? Math.max(82, sy) : sy,
                   isLocked,
                   isSummit,
                   poiRef: poi,
@@ -2123,7 +2125,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     }
   }, [dataset, userPins, verticalScale, lockedTarget]);
 
-  // 6. Render 3D Glowing Breadcrumb Tracklog Ribbon ("Vết chân điện tử")
+  // 6. Render 3D Glowing Breadcrumb Tracklog Ribbon ("Vết chân điện tử", clipped to plinth & jump-filtered)
   useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
@@ -2131,15 +2133,37 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     clearAndDisposeGroup(grp);
 
     if (trackPoints.length < 2) return;
-    const pts = trackPoints.map((tp) => {
-      const groundEle = Math.max(tp.ele, sampleDemElevation(dataset.dem, dataset.bounds, tp.lat, tp.lon));
-      const [x, y, z] = latLonToWorld3D(tp.lat, tp.lon, groundEle, dataset.bounds, verticalScale);
-      return new THREE.Vector3(x, y + 7.5, z);
-    });
     const ov = getMapOverlayPalette(palette);
-    const curveGeo = new THREE.BufferGeometry().setFromPoints(pts);
-    const curveMat = new THREE.LineBasicMaterial({ color: ov.playerCoreNum });
-    grp.add(new THREE.Line(curveGeo, curveMat));
+
+    // Split into contiguous local segments (skip any >500m mode-switch jump)
+    const contiguousRuns: [number, number][][] = [];
+    let currentRun: [number, number][] = [[trackPoints[0].lat, trackPoints[0].lon]];
+    for (let i = 1; i < trackPoints.length; i++) {
+      const prev = trackPoints[i - 1];
+      const cur = trackPoints[i];
+      if (haversineDistanceM(prev.lat, prev.lon, cur.lat, cur.lon) > 500) {
+        if (currentRun.length >= 2) contiguousRuns.push(currentRun);
+        currentRun = [[cur.lat, cur.lon]];
+      } else {
+        currentRun.push([cur.lat, cur.lon]);
+      }
+    }
+    if (currentRun.length >= 2) contiguousRuns.push(currentRun);
+
+    for (const run of contiguousRuns) {
+      const clippedRuns = clipAndSubdividePolylineToBounds(run, dataset.bounds, 18);
+      for (const clipped of clippedRuns) {
+        if (clipped.length < 2) continue;
+        const pts = clipped.map(([lat, lon]) => {
+          const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
+          const [x, y, z] = latLonToWorld3D(lat, lon, groundEle, dataset.bounds, verticalScale);
+          return new THREE.Vector3(x, y + 7.5, z);
+        });
+        const curveGeo = new THREE.BufferGeometry().setFromPoints(pts);
+        const curveMat = new THREE.LineBasicMaterial({ color: ov.playerCoreNum });
+        grp.add(new THREE.Line(curveGeo, curveMat));
+      }
+    }
   }, [dataset, trackPoints, verticalScale, palette]);
 
   // 7. Render 3D Parabolic Homing Arc + Terrain Line to Locked Target + Locked Compass Bearing Ray
@@ -2150,13 +2174,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     clearAndDisposeGroup(grp);
 
     const ov = getMapOverlayPalette(palette);
+    const clampedStart = clampLatLonToBounds(playerLat, playerLon, dataset.bounds);
 
     // A. Locked Sighting Compass Ray (1,200m Line draped over 3D mountain ridges & clipped to plinth)
     if (lockedBearing !== null) {
-      const rayEnd = projectPointByBearing(playerLat, playerLon, lockedBearing, 1200);
+      const rayEnd = projectPointByBearing(clampedStart.lat, clampedStart.lon, lockedBearing, 1200);
       const rayRuns = clipAndSubdividePolylineToBounds(
         [
-          [playerLat, playerLon],
+          [clampedStart.lat, clampedStart.lon],
           [rayEnd.lat, rayEnd.lon]
         ],
         dataset.bounds,
@@ -2177,17 +2202,24 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
     if (!lockedTarget) return;
 
-    const startGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon);
+    const clampedTarget = clampLatLonToBounds(lockedTarget.lat, lockedTarget.lon, dataset.bounds);
+    const startGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, clampedStart.lat, clampedStart.lon);
     const targetGroundEle = sampleDemElevation(
       dataset.dem,
       dataset.bounds,
-      lockedTarget.lat,
-      lockedTarget.lon
+      clampedTarget.lat,
+      clampedTarget.lon
     );
-    const [sx, sy, sz] = latLonToWorld3D(playerLat, playerLon, startGroundEle, dataset.bounds, verticalScale);
+    const [sx, sy, sz] = latLonToWorld3D(
+      clampedStart.lat,
+      clampedStart.lon,
+      startGroundEle,
+      dataset.bounds,
+      verticalScale
+    );
     const [tx, ty, tz] = latLonToWorld3D(
-      lockedTarget.lat,
-      lockedTarget.lon,
+      clampedTarget.lat,
+      clampedTarget.lon,
       targetGroundEle,
       dataset.bounds,
       verticalScale
@@ -2212,8 +2244,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       const samples = 40;
       for (let i = 0; i <= samples; i++) {
         const f = i / samples;
-        const lat = playerLat + (lockedTarget.lat - playerLat) * f;
-        const lon = playerLon + (lockedTarget.lon - playerLon) * f;
+        const lat = clampedStart.lat + (clampedTarget.lat - clampedStart.lat) * f;
+        const lon = clampedStart.lon + (clampedTarget.lon - clampedStart.lon) * f;
         const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
         const [gx, gy, gz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
         groundPts.push(new THREE.Vector3(gx, gy + 6, gz));
