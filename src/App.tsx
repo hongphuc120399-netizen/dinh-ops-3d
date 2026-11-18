@@ -50,6 +50,7 @@ import {
 } from './components/TacticalPanels';
 import {
   FloatingCompassWidget,
+  LeftEdgeDirectionArrow,
   TacticalCompassModal,
   TacticalCompassTape
 } from './components/CompassSystem';
@@ -1751,9 +1752,22 @@ export const App: React.FC = () => {
         )}
       </main>
 
-      {/* LIVE FLOATING 360° COMPASS WIDGET & WGS84 TACTICAL TAG (Hidden in Zen Mode) */}
+      {/* LIVE FLOATING 360° COMPASS WIDGET, LEFT DIRECTION ARROW & WGS84 TACTICAL TAG (Hidden in Zen Mode) */}
       {!zenMode && (
         <>
+          <LeftEdgeDirectionArrow
+            compassHeading={compassHeading}
+            gpsCourse={gpsCourse}
+            headingUp={headingUp}
+            lockedTarget={lockedTarget}
+            activeRoute={activeRoute}
+            playerLat={playerLat}
+            playerLon={playerLon}
+            onAlignDirection={() => {
+              triggerFlyTo(playerLat, playerLon);
+              handleToggleHeadingUp();
+            }}
+          />
           <div className="tactical-coord-tag" aria-hidden="true">
             WGS84 • {playerLat.toFixed(5)}N {playerLon.toFixed(5)}E
           </div>

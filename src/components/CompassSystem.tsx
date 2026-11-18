@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import type { NuiDinhDataset, TacticalTarget, UserPin } from '../types';
+import type { NuiDinhDataset, TacticalRouteResult, TacticalTarget, UserPin } from '../types';
 import {
   computeBearingDeg,
   formatBearingCardinal,
@@ -160,6 +160,141 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
       <div className="fcw-readout">
         <strong>{((Math.round(compassHeading) % 360) + 360) % 360}°</strong>
         {lockedBearing !== null && <span className="fcw-lock-dot">🔒{lockedBearing}°</span>}
+      </div>
+    </button>
+  );
+};
+
+interface LeftEdgeDirectionArrowProps {
+  compassHeading: number;
+  gpsCourse: number | null;
+  headingUp: boolean;
+  lockedTarget: TacticalTarget | null;
+  activeRoute: TacticalRouteResult | null;
+  playerLat: number;
+  playerLon: number;
+  onAlignDirection: () => void;
+}
+
+export const LeftEdgeDirectionArrow: React.FC<LeftEdgeDirectionArrowProps> = ({
+  compassHeading,
+  gpsCourse,
+  headingUp,
+  lockedTarget,
+  activeRoute,
+  playerLat,
+  playerLon,
+  onAlignDirection
+}) => {
+  const hasGuidance = Boolean(
+    (activeRoute && activeRoute.points.length >= 2) || lockedTarget
+  );
+
+  const steerBearing = useMemo(() => {
+    if (activeRoute && activeRoute.points.length >= 2) {
+      let nextPt = activeRoute.points[activeRoute.points.length - 1];
+      for (let i = 1; i < activeRoute.points.length; i++) {
+        const cand = activeRoute.points[i];
+        if (haversineDistanceM(playerLat, playerLon, cand[0], cand[1]) >= 25) {
+          nextPt = cand;
+          break;
+        }
+      }
+      return computeBearingDeg(playerLat, playerLon, nextPt[0], nextPt[1]);
+    }
+    if (lockedTarget) {
+      return computeBearingDeg(playerLat, playerLon, lockedTarget.lat, lockedTarget.lon);
+    }
+    return gpsCourse ?? compassHeading;
+  }, [activeRoute, lockedTarget, playerLat, playerLon, gpsCourse, compassHeading]);
+
+  const rawArrowRot = useMemo(() => {
+    if (hasGuidance) {
+      return steerBearing - compassHeading;
+    }
+    if (headingUp) {
+      return gpsCourse !== null ? gpsCourse - compassHeading : 0;
+    }
+    return gpsCourse ?? compassHeading;
+  }, [hasGuidance, steerBearing, compassHeading, headingUp, gpsCourse]);
+
+  const smoothArrowRot = useContinuousAngle(rawArrowRot);
+  const smoothNorthRot = useContinuousAngle(headingUp ? -compassHeading : 0);
+  const deltaTurn = signedAngleDelta(steerBearing, compassHeading);
+  const absDelta = Math.abs(deltaTurn);
+
+  const subText = useMemo(() => {
+    if (hasGuidance) {
+      if (absDelta <= 15) return 'THẲNG';
+      if (absDelta >= 150) return 'QUAY LẠI';
+      return deltaTurn > 0 ? `PHẢI ${Math.round(absDelta)}°` : `TRÁI ${Math.round(absDelta)}°`;
+    }
+    if (headingUp) return 'H-UP';
+    return gpsCourse !== null ? 'CRS' : 'HDG';
+  }, [hasGuidance, absDelta, deltaTurn, headingUp, gpsCourse]);
+
+  const isOnTrack = hasGuidance && absDelta <= 18;
+
+  return (
+    <button
+      type="button"
+      className={`left-edge-direction-widget ${hasGuidance ? 'has-guidance' : ''} ${
+        isOnTrack ? 'on-track' : ''
+      }`}
+      onClick={onAlignDirection}
+      title={
+        hasGuidance
+          ? 'Mũi tên chỉ hướng đi tới điểm rẽ/mục tiêu (Chạm để căn giữa & xoay bản đồ theo hướng máy)'
+          : 'Mũi tên định hướng di chuyển (Chạm để căn giữa & bật/tắt xoay bản đồ theo hướng máy)'
+      }
+    >
+      <span className="ledw-top">{hasGuidance ? 'LỐI ĐI' : 'HƯỚNG ĐI'}</span>
+
+      <svg width="44" height="44" viewBox="0 0 44 44" className="ledw-dial">
+        <circle cx="22" cy="22" r="19" fill="rgba(7,11,18,0.65)" stroke="rgba(148,163,184,0.22)" strokeWidth="1" />
+        {Array.from({ length: 8 }).map((_, i) => {
+          const ang = i * 45;
+          const isCard = i % 2 === 0;
+          return (
+            <line
+              key={ang}
+              x1="22"
+              y1={isCard ? '2.5' : '3.5'}
+              x2="22"
+              y2={isCard ? '6.5' : '5.5'}
+              stroke={isCard ? 'rgba(203,213,225,0.55)' : 'rgba(148,163,184,0.32)'}
+              strokeWidth={isCard ? '1.3' : '1'}
+              transform={`rotate(${ang} 22 22)`}
+            />
+          );
+        })}
+
+        {/* Subtle North Reference Pip */}
+        <g style={{ transform: `rotate(${smoothNorthRot}deg)`, transformOrigin: '22px 22px' }}>
+          <polygon points="22,1 19.6,5.5 24.4,5.5" fill="#c26d68" opacity="0.88" />
+        </g>
+
+        {/* Faint forward lubber tick when guiding relative to phone facing */}
+        {hasGuidance && (
+          <line x1="22" y1="6" x2="22" y2="11" stroke="rgba(226,232,240,0.45)" strokeWidth="1.2" />
+        )}
+
+        {/* Primary Directional Chevron Arrow */}
+        <g style={{ transform: `rotate(${smoothArrowRot}deg)`, transformOrigin: '22px 22px' }}>
+          <polygon
+            points="22,7 30.5,31.5 22,25.5 13.5,31.5"
+            className="ledw-arrow-poly"
+            stroke="#06090f"
+            strokeWidth="1.4"
+            strokeLinejoin="round"
+          />
+        </g>
+        <circle cx="22" cy="22" r="2.1" fill="#f8fafc" stroke="#06090f" strokeWidth="1" />
+      </svg>
+
+      <div className="ledw-bottom">
+        <strong>{formatBearingCardinal(steerBearing)}</strong>
+        <span className="ledw-sub">{subText}</span>
       </div>
     </button>
   );

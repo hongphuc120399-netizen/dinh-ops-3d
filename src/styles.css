@@ -93,6 +93,7 @@ button:active {
 .top-hud-bar,
 .bottom-thumb-dock,
 .floating-compass-widget,
+.left-edge-direction-widget,
 .floating-3d-right-stack,
 .map-2d-floating-controls,
 .tactical-coord-tag {
@@ -106,6 +107,7 @@ button:active {
 .app-shell.hud-dragging .top-hud-bar,
 .app-shell.hud-dragging .bottom-thumb-dock,
 .app-shell.hud-dragging .floating-compass-widget,
+.app-shell.hud-dragging .left-edge-direction-widget,
 .app-shell.hud-dragging .floating-3d-right-stack,
 .app-shell.hud-dragging .map-2d-floating-controls,
 .app-shell.hud-dragging .tactical-coord-tag {
@@ -2389,6 +2391,9 @@ select {
   left: max(8px, env(safe-area-inset-top));
   bottom: 6px;
 }
+.app-shell.synthetic-landscape .left-edge-direction-widget {
+  left: max(8px, env(safe-area-inset-top));
+}
 .app-shell.synthetic-landscape .tactical-coord-tag {
   left: max(8px, env(safe-area-inset-top));
   bottom: 62px;
@@ -3567,4 +3572,106 @@ select {
   background: var(--accent-surface);
   border-color: var(--accent-border);
   color: var(--accent-hud);
+}
+
+/* ============================================================================
+   LEFT EDGE TACTICAL DIRECTION ARROW WIDGET
+   ============================================================================ */
+.left-edge-direction-widget {
+  position: absolute;
+  left: max(8px, env(safe-area-inset-left));
+  top: 50%;
+  transform: translateY(-54%);
+  z-index: 560;
+  width: 60px;
+  padding: 4px 4px 5px;
+  border-radius: 8px;
+  background: rgba(8, 11, 16, 0.88);
+  backdrop-filter: blur(18px) saturate(135%);
+  border: 1px solid var(--accent-border);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.58);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.left-edge-direction-widget:active {
+  transform: translateY(-54%) scale(0.96);
+}
+
+.left-edge-direction-widget.has-guidance {
+  border-color: var(--accent-gold);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65), 0 0 12px rgba(200, 162, 90, 0.22);
+}
+
+.left-edge-direction-widget.on-track {
+  border-color: var(--accent-emerald);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65), 0 0 12px rgba(125, 158, 133, 0.3);
+}
+
+.ledw-top {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.52rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  color: var(--text-secondary);
+}
+
+.left-edge-direction-widget.has-guidance .ledw-top {
+  color: var(--accent-gold);
+}
+
+.left-edge-direction-widget.on-track .ledw-top {
+  color: var(--accent-emerald);
+}
+
+.ledw-dial {
+  display: block;
+}
+
+.ledw-arrow-poly {
+  fill: var(--accent-hud);
+  transition: fill 140ms ease-out;
+}
+
+.left-edge-direction-widget.has-guidance .ledw-arrow-poly {
+  fill: var(--accent-gold);
+}
+
+.left-edge-direction-widget.on-track .ledw-arrow-poly {
+  fill: #4ade80;
+}
+
+.ledw-bottom {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  line-height: 1.08;
+  font-variant-numeric: tabular-nums;
+}
+
+.ledw-bottom strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.6rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+
+.ledw-sub {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.52rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--accent-hud);
+}
+
+.left-edge-direction-widget.has-guidance .ledw-sub {
+  color: var(--accent-gold);
+}
+
+.left-edge-direction-widget.on-track .ledw-sub {
+  color: #4ade80;
 }
