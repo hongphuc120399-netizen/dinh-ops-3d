@@ -1,4 +1,34 @@
-import type { GeoBounds, ImportedGpxTrack, TacticalTarget, TrackPoint, UserPin } from '../types';
+import type {
+  GeoBounds,
+  ImportedGpxTrack,
+  TacticalRouteResult,
+  TacticalTarget,
+  TrackPoint,
+  UserPin
+} from '../types';
+
+export type OfflineTileLayer = 'google-hybrid' | 'google-sat' | 'google-terrain' | 'opentopo';
+
+export interface OfflineTileFallbackResult {
+  blob: Blob;
+  sx: number;
+  sy: number;
+  sw: number;
+  sh: number;
+  layer: OfflineTileLayer;
+  z: number;
+}
+
+export interface TacticalSessionBackup {
+  format: 'dinh-ops-3d-backup-v1';
+  exportedAt: string;
+  userPins: UserPin[];
+  trackPoints: TrackPoint[];
+  importedGpx: ImportedGpxTrack[];
+  lockedTarget: TacticalTarget | null;
+  lockedBearing: number | null;
+  activeRoute: TacticalRouteResult | null;
+}
 
 const DB_NAME = 'DinhOps3DOfflineVault';
 const DB_VERSION = 1;
@@ -7,31 +37,38 @@ let dbPromise: Promise<IDBDatabase> | null = null;
 
 function openVault(): Promise<IDBDatabase> {
   if (dbPromise) return dbPromise;
-  dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains('state')) {
-        db.createObjectStore('state');
-      }
-      if (!db.objectStoreNames.contains('tiles')) {
-        db.createObjectStore('tiles');
-      }
-    };
-    req.onsuccess = () => {
-      const db = req.result;
-      db.onversionchange = () => {
-        db.close();
-        dbPromise = null;
+  const p = new Promise<IDBDatabase>((resolve, reject) => {
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('state')) {
+          db.createObjectStore('state');
+        }
+        if (!db.objectStoreNames.contains('tiles')) {
+          db.createObjectStore('tiles');
+        }
       };
-      resolve(db);
-    };
-    req.onerror = () => {
-      dbPromise = null;
-      reject(req.error);
-    };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+          dbPromise = null;
+        };
+        resolve(db);
+      };
+      req.onerror = () => {
+        reject(req.error);
+      };
+    } catch (err) {
+      reject(err);
+    }
+  }).catch((err) => {
+    dbPromise = null;
+    throw err;
   });
-  return dbPromise;
+  dbPromise = p;
+  return p;
 }
 
 export async function vaultGet<T>(key: string, fallback: T): Promise<T> {
@@ -113,7 +150,7 @@ export function lat2tile(lat: number, z: number): number {
   return Math.floor(((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z));
 }
 
-export function getTileUrl(layer: 'google-hybrid' | 'google-sat' | 'google-terrain' | 'opentopo', z: number, x: number, y: number): string {
+export function getTileUrl(layer: OfflineTileLayer, z: number, x: number, y: number): string {
   const sub = (x + y) % 4;
   if (layer === 'google-sat') {
     return `https://mt${sub}.google.com/vt/lyrs=s&x=${x}&y=${y}&z=${z}`;
@@ -129,23 +166,60 @@ export function getTileUrl(layer: 'google-hybrid' | 'google-sat' | 'google-terra
 }
 
 /**
- * Fetch tile with Offline Vault first -> Network fallback -> Auto-cache into Vault!
+ * Abort network fetch quickly on weak "zombie" 1-bar mountain cellular signals
+ * so offline parent-tile fallback renders immediately instead of hanging 30-60s.
  */
-export async function fetchTileWithCache(
-  layer: 'google-hybrid' | 'google-sat' | 'google-terrain' | 'opentopo',
+async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Response> {
+  if (typeof AbortController === 'undefined') {
+    return fetch(url, { mode: 'cors', credentials: 'omit' });
+  }
+  const controller = new AbortController();
+  const timer = globalThis.setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { mode: 'cors', credentials: 'omit', signal: controller.signal });
+  } finally {
+    globalThis.clearTimeout(timer);
+  }
+}
+
+/**
+ * Compute parent tile coordinate and 256x256 source crop rectangle for offline overzoom.
+ */
+export function computeParentTileCrop(
   z: number,
   x: number,
-  y: number
+  y: number,
+  dz: number
+): { pz: number; px: number; py: number; sx: number; sy: number; sw: number; sh: number } {
+  const pz = z - dz;
+  const scale = 1 << dz;
+  const px = Math.floor(x / scale);
+  const py = Math.floor(y / scale);
+  const subSize = 256 / scale;
+  const sx = (((x % scale) + scale) % scale) * subSize;
+  const sy = (((y % scale) + scale) % scale) * subSize;
+  return { pz, px, py, sx, sy, sw: subSize, sh: subSize };
+}
+
+/**
+ * Fetch tile with Offline Vault first -> Timed Network fallback -> Auto-cache into Vault!
+ */
+export async function fetchTileWithCache(
+  layer: OfflineTileLayer,
+  z: number,
+  x: number,
+  y: number,
+  timeoutMs = 3200
 ): Promise<Blob | null> {
   const key = `${layer}:${z}:${x}:${y}`;
   const cached = await getCachedTileBlob(key);
   if (cached) return cached;
 
-  if (!navigator.onLine) return null;
+  if (typeof navigator !== 'undefined' && !navigator.onLine) return null;
 
   try {
     const url = getTileUrl(layer, z, x, y);
-    const res = await fetch(url, { mode: 'cors', credentials: 'omit' });
+    const res = await fetchWithTimeout(url, timeoutMs);
     if (!res.ok) return null;
     const blob = await res.blob();
     if (blob.size > 200) {
@@ -159,12 +233,61 @@ export async function fetchTileWithCache(
 }
 
 /**
- * Pre-download Google Satellite + Hybrid + Terrain tiles covering all of Nui Dinh for 100% Offline Play!
+ * Find best cached fallback tile when offline or timed out:
+ * A) Same zoom `z` across sibling cached layers (`google-hybrid`, `google-sat`, `google-terrain`, `opentopo`)
+ * B) Parent tile overzoom (`dz = 1..5`, `pz >= 13`) on preferred layer first, then sibling layers.
  */
-export async function downloadNuiDinhOfflineTiles(
-  bounds: GeoBounds,
-  onProgress: (done: number, total: number) => void
-): Promise<{ saved: number; total: number }> {
+export async function getBestOfflineTileFallback(
+  preferredLayer: OfflineTileLayer,
+  z: number,
+  x: number,
+  y: number
+): Promise<OfflineTileFallbackResult | null> {
+  const priorityOrder: OfflineTileLayer[] = ['google-hybrid', 'google-sat', 'google-terrain', 'opentopo'];
+  const sameZoomLayers = priorityOrder.filter((l) => l !== preferredLayer);
+
+  // Step A: Cross-layer fallback at exact same zoom level `z`
+  for (const layer of sameZoomLayers) {
+    const blob = await getCachedTileBlob(`${layer}:${z}:${x}:${y}`);
+    if (blob) {
+      return { blob, sx: 0, sy: 0, sw: 256, sh: 256, layer, z };
+    }
+  }
+
+  // Step B: Parent-tile overzoom fallback (zoom 16/15/14/13 upscaled smoothly to high zoom)
+  const parentLayers: OfflineTileLayer[] = [
+    preferredLayer,
+    ...(['google-hybrid', 'google-sat', 'google-terrain'] as OfflineTileLayer[]).filter(
+      (l) => l !== preferredLayer
+    )
+  ];
+
+  for (let dz = 1; dz <= 5; dz++) {
+    const pz = z - dz;
+    if (pz < 13) break;
+    const crop = computeParentTileCrop(z, x, y, dz);
+    for (const layer of parentLayers) {
+      const parentBlob = await getCachedTileBlob(`${layer}:${crop.pz}:${crop.px}:${crop.py}`);
+      if (parentBlob) {
+        return {
+          blob: parentBlob,
+          sx: crop.sx,
+          sy: crop.sy,
+          sw: crop.sw,
+          sh: crop.sh,
+          layer,
+          z: crop.pz
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+export function buildNuiDinhOfflineTileJobs(
+  bounds: GeoBounds
+): { layer: 'google-sat' | 'google-hybrid' | 'google-terrain'; z: number; x: number; y: number }[] {
   const jobs: { layer: 'google-sat' | 'google-hybrid' | 'google-terrain'; z: number; x: number; y: number }[] = [];
 
   // Zoom 14 & 15 for Satellite 3D Texture + Zoom 13..16 for 2D Hybrid & Terrain
@@ -187,20 +310,34 @@ export async function downloadNuiDinhOfflineTiles(
       }
     }
   }
+  return jobs;
+}
+
+/**
+ * Pre-download Google Satellite + Hybrid + Terrain tiles covering all of Nui Dinh for 100% Offline Play!
+ */
+export async function downloadNuiDinhOfflineTiles(
+  bounds: GeoBounds,
+  onProgress: (done: number, total: number) => void
+): Promise<{ saved: number; total: number }> {
+  const jobs = buildNuiDinhOfflineTileJobs(bounds);
 
   let done = 0;
   let saved = 0;
   const total = jobs.length;
   onProgress(0, total);
 
-  // Download with concurrency = 8
+  // Download with concurrency = 8, 6.5s timeout, 1 auto-retry on transient failure
   const concurrency = 8;
   let cursor = 0;
   async function worker() {
     while (cursor < jobs.length) {
       const idx = cursor++;
       const job = jobs[idx];
-      const blob = await fetchTileWithCache(job.layer, job.z, job.x, job.y);
+      let blob = await fetchTileWithCache(job.layer, job.z, job.x, job.y, 6500);
+      if (!blob) {
+        blob = await fetchTileWithCache(job.layer, job.z, job.x, job.y, 6500);
+      }
       if (blob) saved++;
       done++;
       onProgress(done, total);
@@ -253,13 +390,15 @@ export async function loadPersistedSession(): Promise<{
   gpxList: ImportedGpxTrack[];
   lockedTarget: TacticalTarget | null;
   lockedBearing: number | null;
+  activeRoute: TacticalRouteResult | null;
 }> {
-  const [pins, track, gpxList, lockedTarget, lockedBearing] = await Promise.all([
+  const [pins, track, gpxList, lockedTarget, lockedBearing, activeRoute] = await Promise.all([
     vaultGet<UserPin[]>('user_pins', []),
     vaultGet<TrackPoint[]>('active_track', []),
     vaultGet<ImportedGpxTrack[]>('imported_gpx', []),
     vaultGet<TacticalTarget | null>('locked_target', null),
-    vaultGet<number | null>('locked_bearing', null)
+    vaultGet<number | null>('locked_bearing', null),
+    vaultGet<TacticalRouteResult | null>('active_route', null)
   ]);
-  return { pins, track, gpxList, lockedTarget, lockedBearing };
+  return { pins, track, gpxList, lockedTarget, lockedBearing, activeRoute };
 }

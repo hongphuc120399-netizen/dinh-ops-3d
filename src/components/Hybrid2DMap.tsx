@@ -12,7 +12,7 @@ import type {
   TrackPoint,
   UserPin
 } from '../types';
-import { fetchTileWithCache, getCachedTileBlob } from '../utils/offlineVault';
+import { fetchTileWithCache, getBestOfflineTileFallback } from '../utils/offlineVault';
 import { projectPointByBearing, sampleDemElevation } from '../utils/geoMath';
 import { useContinuousAngle } from './CompassSystem';
 import { getMapOverlayPalette, resolveRouteColor } from './Terrain3DView';
@@ -117,7 +117,9 @@ class VaultGridLayer extends L.GridLayer {
       const url = URL.createObjectURL(blob);
       const img = new Image();
       img.onload = () => {
-        ctx.drawImage(img, sx, sy, sw, sh, 0, 0, 256, 256);
+        const scaleX = img.naturalWidth > 0 ? img.naturalWidth / 256 : 1;
+        const scaleY = img.naturalHeight > 0 ? img.naturalHeight / 256 : 1;
+        ctx.drawImage(img, sx * scaleX, sy * scaleY, sw * scaleX, sh * scaleY, 0, 0, 256, 256);
         URL.revokeObjectURL(url);
         done(undefined, canvas);
       };
@@ -135,21 +137,11 @@ class VaultGridLayer extends L.GridLayer {
           drawBlobRect(directBlob, 0, 0, 256, 256);
           return;
         }
-        // Offline Parent-Tile Overzoom Fallback (scales cached z=16/15/14/13 smoothly at Zoom 17-19!)
-        for (let dz = 1; dz <= 5; dz++) {
-          const pz = coords.z - dz;
-          if (pz < 13) break;
-          const scale = 1 << dz;
-          const px = Math.floor(coords.x / scale);
-          const py = Math.floor(coords.y / scale);
-          const parentBlob = await getCachedTileBlob(`${vaultLayer}:${pz}:${px}:${py}`);
-          if (parentBlob) {
-            const subSize = 256 / scale;
-            const sx = (coords.x % scale) * subSize;
-            const sy = (coords.y % scale) * subSize;
-            drawBlobRect(parentBlob, sx, sy, subSize, subSize);
-            return;
-          }
+        // Offline Cross-Layer + Parent-Tile Overzoom Fallback (scales cached z=16/15/14/13 smoothly at Zoom 17-19!)
+        const fb = await getBestOfflineTileFallback(vaultLayer, coords.z, coords.x, coords.y);
+        if (fb) {
+          drawBlobRect(fb.blob, fb.sx, fb.sy, fb.sw, fb.sh);
+          return;
         }
         done(undefined, canvas);
       } catch {

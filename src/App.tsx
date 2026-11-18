@@ -28,7 +28,12 @@ import {
   sampleDemElevation,
   trimRouteFromPlayer
 } from './utils/geoMath';
-import { countCachedTiles, loadPersistedSession, vaultSet } from './utils/offlineVault';
+import {
+  countCachedTiles,
+  loadPersistedSession,
+  vaultSet,
+  type TacticalSessionBackup
+} from './utils/offlineVault';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -121,10 +126,20 @@ const SIM_PRESETS = [
 export const App: React.FC = () => {
   // View & Layer Controls
   const [viewMode, setViewMode] = useState<ViewMode>('3d');
-  const [skin3D, setSkin3D] = useState<Terrain3DSkin>('tactical');
+  const [skin3D, setSkin3D] = useState<Terrain3DSkin>(() => {
+    if (typeof window === 'undefined') return 'tactical';
+    const saved = localStorage.getItem('dinh_3d_skin_v1') as Terrain3DSkin | null;
+    return saved && ['tactical', 'topo', 'satellite', 'night'].includes(saved) ? saved : 'tactical';
+  });
   const [cameraMode, setCameraMode] = useState<Camera3DMode>('orbit');
   const [verticalScale, setVerticalScale] = useState<number>(1.55);
-  const [map2DStyle, setMap2DStyle] = useState<Map2DStyle>('google-hybrid');
+  const [map2DStyle, setMap2DStyle] = useState<Map2DStyle>(() => {
+    if (typeof window === 'undefined') return 'google-hybrid';
+    const saved = localStorage.getItem('dinh_2d_style_v1') as Map2DStyle | null;
+    return saved && ['google-hybrid', 'google-terrain', 'opentopo', 'offline-vector'].includes(saved)
+      ? saved
+      : 'google-hybrid';
+  });
   const [headingUp, setHeadingUp] = useState<boolean>(false);
   const [tacticalTone2D, setTacticalTone2D] = useState<boolean>(true);
   const [palette, setPalette] = useState<TacticalPalette>(() => {
@@ -143,7 +158,9 @@ export const App: React.FC = () => {
   const [showLayerPopover, setShowLayerPopover] = useState(false);
 
   // GPS & Sensor State
-  const [isSimMode, setIsSimMode] = useState<boolean>(true);
+  const [isSimMode, setIsSimMode] = useState<boolean>(() =>
+    typeof window !== 'undefined' ? localStorage.getItem('dinh_gps_real_mode_v1') !== '1' : true
+  );
   const [simAutoWalk, setSimAutoWalk] = useState<boolean>(false);
   const [simDrawerOpen, setSimDrawerOpen] = useState<boolean>(false);
   const [playerLat, setPlayerLat] = useState<number>(10.531285); // Start at Chua Hang To on Red Route!
@@ -371,13 +388,23 @@ export const App: React.FC = () => {
       })
       .catch(() => {});
     loadPersistedSession()
-      .then(({ pins, track, gpxList, lockedTarget: savedTarget, lockedBearing: savedBearing }) => {
-        if (pins.length > 0) setUserPins(pins);
-        if (track.length > 0) setTrackPoints(track);
-        if (gpxList.length > 0) setImportedGpx(gpxList);
-        if (savedTarget) setLockedTarget(savedTarget);
-        if (savedBearing !== null) setLockedBearing(savedBearing);
-      })
+      .then(
+        ({
+          pins,
+          track,
+          gpxList,
+          lockedTarget: savedTarget,
+          lockedBearing: savedBearing,
+          activeRoute: savedRoute
+        }) => {
+          if (pins.length > 0) setUserPins(pins);
+          if (track.length > 0) setTrackPoints(track);
+          if (gpxList.length > 0) setImportedGpx(gpxList);
+          if (savedTarget) setLockedTarget(savedTarget);
+          if (savedBearing !== null) setLockedBearing(savedBearing);
+          if (savedRoute) setActiveRoute(savedRoute);
+        }
+      )
       .finally(() => {
         setVaultHydrated(true);
       });
@@ -440,6 +467,36 @@ export const App: React.FC = () => {
     vaultSet('locked_bearing', lockedBearing);
   }, [lockedBearing, vaultHydrated]);
 
+  useEffect(() => {
+    if (!vaultHydrated) return;
+    vaultSet('active_route', activeRoute);
+  }, [activeRoute, vaultHydrated]);
+
+  // Persist user's GPS Real vs Sim preference & map skin preferences locally for instant Offline restart in forest
+  useEffect(() => {
+    try {
+      localStorage.setItem('dinh_gps_real_mode_v1', isSimMode ? '0' : '1');
+    } catch {
+      // Ignore storage warnings
+    }
+  }, [isSimMode]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dinh_3d_skin_v1', skin3D);
+    } catch {
+      // Ignore storage warnings
+    }
+  }, [skin3D]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dinh_2d_style_v1', map2DStyle);
+    } catch {
+      // Ignore storage warnings
+    }
+  }, [map2DStyle]);
+
   // 2. Screen WakeLock for Continuous Trail Tracking
   useEffect(() => {
     let wakeLock: WakeLockSentinel | null = null;
@@ -466,14 +523,19 @@ export const App: React.FC = () => {
       if (cancelled) return;
       const dToNuiDinh = haversineDistanceM(lat, lon, LA_BAN_LAT, LA_BAN_LON);
       if (dToNuiDinh <= 15000) {
-        setTrackPoints([]);
+        const switchingFromSim = isSimModeRef.current;
+        if (switchingFromSim) {
+          setTrackPoints([]);
+        }
         setPlayerLat(lat);
         setPlayerLon(lon);
         setPlayerAccuracy(acc);
         setGpsFixCount((c) => c + 1);
         setLastGpsFixTime(Date.now());
         setIsSimMode(false);
-        triggerToast('🛰️ Phát hiện bạn đang ở khu vực Núi Dinh — Đã tự động bật GPS Thật!');
+        if (switchingFromSim) {
+          triggerToast('🛰️ Phát hiện bạn đang ở khu vực Núi Dinh — Đã tự động bật GPS Thật!');
+        }
       }
     };
 
@@ -1187,6 +1249,26 @@ export const App: React.FC = () => {
     });
     setShowPrecisionRadar(true);
   }, []);
+
+  const handleRestoreBackup = useCallback(
+    (backup: TacticalSessionBackup) => {
+      setUserPins(Array.isArray(backup.userPins) ? backup.userPins : []);
+      setTrackPoints(Array.isArray(backup.trackPoints) ? backup.trackPoints : []);
+      setImportedGpx(Array.isArray(backup.importedGpx) ? backup.importedGpx : []);
+      setLockedTarget(backup.lockedTarget ?? null);
+      setLockedBearing(typeof backup.lockedBearing === 'number' ? backup.lockedBearing : null);
+      setActiveRoute(backup.activeRoute ?? null);
+      if (backup.lockedTarget) {
+        triggerFlyTo(backup.lockedTarget.lat, backup.lockedTarget.lon);
+      } else if (backup.userPins && backup.userPins.length > 0) {
+        triggerFlyTo(backup.userPins[0].lat, backup.userPins[0].lon);
+      }
+      triggerToast(
+        `💾 Đã khôi phục ${backup.userPins?.length ?? 0} Ghim & ${backup.trackPoints?.length ?? 0} điểm Vết chân!`
+      );
+    },
+    [triggerFlyTo, triggerToast]
+  );
 
   const handleBacktrackStart = useCallback(() => {
     if (trackPoints.length < 2) {
@@ -2106,6 +2188,9 @@ export const App: React.FC = () => {
           onToggleRealSensor={handleToggleRealCompass}
           trackPoints={trackPoints}
           userPins={userPins}
+          importedGpx={importedGpx}
+          lockedBearing={lockedBearing}
+          activeRoute={activeRoute}
           cachedTileCount={cachedTileCount}
           onRefreshTileCount={refreshTileCount}
           onCreateSolvedPin={handleSavePin}
@@ -2114,6 +2199,7 @@ export const App: React.FC = () => {
             if (wptPins.length > 0) setUserPins((prev) => [...wptPins, ...prev]);
             triggerToast(`📂 Đã nạp lộ trình GPX "${gpx.name}" (${gpx.points.length} điểm)!`);
           }}
+          onRestoreBackup={handleRestoreBackup}
           onFlyTo={triggerFlyTo}
           onClose={() => setShowToolkitModal(false)}
         />

@@ -1632,6 +1632,45 @@ select {
   grid-template-columns: 1fr 1fr;
   gap: 8px;
 }
+.offline-checklist-card {
+  padding: 11px 12px;
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.85);
+  border: 1px solid rgba(52, 211, 153, 0.35);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.offline-check-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 0.74rem;
+  color: #cbd5e1;
+  padding-top: 5px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.16);
+}
+.offline-badge-ok {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(34, 197, 94, 0.18);
+  border: 1px solid rgba(74, 222, 128, 0.45);
+  color: #4ade80;
+  font-weight: 700;
+  font-size: 0.68rem;
+}
+.offline-badge-warn {
+  flex-shrink: 0;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.18);
+  border: 1px solid rgba(251, 191, 36, 0.5);
+  color: #fbbf24;
+  font-weight: 700;
+  font-size: 0.68rem;
+}
 .file-btn {
   display: flex;
   align-items: center;

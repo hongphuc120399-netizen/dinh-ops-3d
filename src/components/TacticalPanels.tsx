@@ -3,6 +3,7 @@ import type {
   ImportedGpxTrack,
   NuiDinhDataset,
   PinCategory,
+  TacticalRouteResult,
   TacticalTarget,
   TrackPoint,
   UserPin
@@ -17,7 +18,12 @@ import {
   parseGpxText,
   sampleDemElevation
 } from '../utils/geoMath';
-import { compressImageFile, downloadNuiDinhOfflineTiles } from '../utils/offlineVault';
+import {
+  buildNuiDinhOfflineTileJobs,
+  compressImageFile,
+  downloadNuiDinhOfflineTiles,
+  type TacticalSessionBackup
+} from '../utils/offlineVault';
 import { CipherDecoderPanel } from './CipherDecoderPanel';
 import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
 import { TacticalSightingPanel, type PinRequestPayload } from './TacticalSightingPanel';
@@ -471,10 +477,14 @@ interface ReconToolkitModalProps {
   onToggleRealSensor?: (enable: boolean) => void;
   trackPoints: TrackPoint[];
   userPins: UserPin[];
+  importedGpx?: ImportedGpxTrack[];
+  lockedBearing?: number | null;
+  activeRoute?: TacticalRouteResult | null;
   cachedTileCount: number;
   onRefreshTileCount: () => void;
   onCreateSolvedPin: (pin: UserPin, lockTarget: boolean) => void;
   onImportGpx: (gpx: ImportedGpxTrack, waypointsAsPins: UserPin[]) => void;
+  onRestoreBackup?: (backup: TacticalSessionBackup) => void;
   onFlyTo: (lat: number, lon: number) => void;
   onClose: () => void;
 }
@@ -494,14 +504,24 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   onToggleRealSensor,
   trackPoints,
   userPins,
+  importedGpx = [],
+  lockedBearing = null,
+  activeRoute = null,
   cachedTileCount,
   onRefreshTileCount,
   onCreateSolvedPin,
   onImportGpx,
+  onRestoreBackup,
   onFlyTo,
   onClose
 }) => {
   const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
+  const [backupErr, setBackupErr] = useState<string | null>(null);
+  const plannedTileTotal = React.useMemo(
+    () => buildNuiDinhOfflineTileJobs(dataset.bounds).length,
+    [dataset.bounds]
+  );
 
   // Offline Tile Downloader State
   const [dlState, setDlState] = useState<{ running: boolean; done: number; total: number; msg?: string }>({
@@ -736,6 +756,61 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleExportJsonBackup = () => {
+    setBackupErr(null);
+    const payload: TacticalSessionBackup = {
+      format: 'dinh-ops-3d-backup-v1',
+      exportedAt: new Date().toISOString(),
+      userPins,
+      trackPoints,
+      importedGpx,
+      lockedTarget,
+      lockedBearing,
+      activeRoute
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `nui-dinh-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setBackupMsg(
+      `✅ Đã xuất sao lưu trọn bộ (${userPins.length} Ghim, ${trackPoints.length} điểm Vết chân${activeRoute ? ', đang lưu lộ trình GTA' : ''}).`
+    );
+  };
+
+  const handleImportJsonBackup = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    setBackupErr(null);
+    setBackupMsg(null);
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text) as Partial<TacticalSessionBackup>;
+      if (!parsed || !Array.isArray(parsed.userPins) || !Array.isArray(parsed.trackPoints)) {
+        throw new Error('File sao lưu JSON không đúng cấu trúc Dinh Ops 3D.');
+      }
+      const normalized: TacticalSessionBackup = {
+        format: 'dinh-ops-3d-backup-v1',
+        exportedAt: typeof parsed.exportedAt === 'string' ? parsed.exportedAt : new Date().toISOString(),
+        userPins: parsed.userPins,
+        trackPoints: parsed.trackPoints,
+        importedGpx: Array.isArray(parsed.importedGpx) ? parsed.importedGpx : [],
+        lockedTarget: parsed.lockedTarget ?? null,
+        lockedBearing: typeof parsed.lockedBearing === 'number' ? parsed.lockedBearing : null,
+        activeRoute: parsed.activeRoute ?? null
+      };
+      onRestoreBackup?.(normalized);
+      setBackupMsg(
+        `✅ Đã khôi phục ${normalized.userPins.length} Ghim & ${normalized.trackPoints.length} điểm Vết chân từ file!`
+      );
+    } catch (err) {
+      setBackupErr(err instanceof Error ? err.message : 'Không thể đọc file sao lưu .JSON');
+    }
+  };
+
   const startOfflineDownload = async () => {
     setDlState({ running: true, done: 0, total: 1 });
     const res = await downloadNuiDinhOfflineTiles(dataset.bounds, (done, total) => {
@@ -815,13 +890,54 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
 
         {tab === 'offline' && (
           <div className="toolkit-body">
+            <div className="offline-checklist-card">
+              <div className="vault-stat">
+                <strong>✅ Bảng Kiểm Tra Sẵn Sàng Offline 100% (Thứ 7)</strong>
+              </div>
+              <div className="offline-check-row">
+                <span>
+                  🏔️ Địa hình 3D DEM + {dataset.trails.length} Đường mòn + {dataset.pois.length} Đỉnh/Trạm
+                </span>
+                <span className="offline-badge-ok">100% Trong máy</span>
+              </div>
+              <div className="offline-check-row">
+                <span>🔐 Giải Mật Thư + Kỹ Thuật + Giao Hội + AR + GTA V</span>
+                <span className="offline-badge-ok">100% Trong máy</span>
+              </div>
+              <div className="offline-check-row">
+                <span>🛰️ Kho Bản Đồ Vệ Tinh Google (IndexedDB)</span>
+                <span
+                  className={
+                    cachedTileCount >= Math.min(250, plannedTileTotal)
+                      ? 'offline-badge-ok'
+                      : 'offline-badge-warn'
+                  }
+                >
+                  {cachedTileCount}/{plannedTileTotal} mảnh •{' '}
+                  {cachedTileCount >= Math.min(250, plannedTileTotal) ? 'ĐÃ SẴN SÀNG' : 'NÊN TẢI TRƯỚC'}
+                </span>
+              </div>
+              <div className="offline-check-row">
+                <span>
+                  💾 Tự lưu Ghim ({userPins.length}) • Vết chân ({trackPoints.length}) • Lộ trình GTA
+                </span>
+                <span className="offline-badge-ok">
+                  {activeRoute ? 'Đang lưu lộ trình' : 'IndexedDB tức thì'}
+                </span>
+              </div>
+            </div>
+
             <div className="offline-vault-box">
               <div className="vault-stat">
                 <strong>📦 Bộ nhớ Bản đồ Offline trong máy:</strong>
-                <span>{cachedTileCount} mảnh vệ tinh/địa hình đã lưu</span>
+                <span>
+                  {cachedTileCount}/{plannedTileTotal} mảnh vệ tinh/địa hình đã lưu
+                </span>
               </div>
               <p className="helper-note">
-                281 đường mòn, 4 tuyến màu và địa hình 3D độ cao Núi Dinh <strong>đã được nhúng cứng 100% sẵn trong app</strong>. Bấm nút dưới trước khi lên núi để tải thêm trọn bộ <strong>Ảnh Vệ Tinh Google Hybrid</strong> vào máy dùng khi mất sóng!
+                {dataset.trails.length} đường mòn, {dataset.routes.length} tuyến màu và địa hình 3D độ cao Núi Dinh{' '}
+                <strong>đã được nhúng cứng 100% sẵn trong app</strong>. Bấm nút dưới trước khi lên núi để tải thêm trọn
+                bộ <strong>Ảnh Vệ Tinh Google Hybrid</strong> vào máy dùng khi mất sóng hoặc sóng yếu 1 vạch!
               </p>
               {dlState.running ? (
                 <div className="dl-progress-wrap">
@@ -849,9 +965,21 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
                 📂 Nhập file .GPX BTC
               </label>
               <button type="button" className="secondary-action-btn" onClick={handleExportGpx}>
-                📤 Xuất Vết Chân & Ghim (.GPX)
+                📤 Xuất Vết Chân &amp; Ghim (.GPX)
               </button>
             </div>
+
+            <div className="gpx-actions-row">
+              <button type="button" className="secondary-action-btn" onClick={handleExportJsonBackup}>
+                💾 Xuất Sao Lưu Trọn Bộ (.JSON)
+              </button>
+              <label className="secondary-action-btn file-btn">
+                <input type="file" accept=".json,application/json" onChange={handleImportJsonBackup} hidden />
+                📂 Khôi Phục Sao Lưu (.JSON)
+              </label>
+            </div>
+            {backupMsg && <div className="success-box">{backupMsg}</div>}
+            {backupErr && <div className="error-box">⚠️ {backupErr}</div>}
           </div>
         )}
 

@@ -26,7 +26,7 @@ import {
   sampleDemSlopeDeg,
   world3DToLatLon
 } from '../utils/geoMath';
-import { fetchTileWithCache } from '../utils/offlineVault';
+import { fetchTileWithCache, getBestOfflineTileFallback } from '../utils/offlineVault';
 import {
   RadialActionId,
   RadialSpotState,
@@ -680,8 +680,22 @@ async function stitchSatelliteCanvas(
     for (let ty = tyStart; ty <= tyEnd; ty++) {
       tasks.push(
         (async () => {
-          const blob = await fetchTileWithCache('google-sat', z, tx, ty);
-          if (!blob) return;
+          let blob = await fetchTileWithCache('google-sat', z, tx, ty);
+          let sx = 0;
+          let sy = 0;
+          let sw = 256;
+          let sh = 256;
+
+          if (!blob) {
+            const fb = await getBestOfflineTileFallback('google-sat', z, tx, ty);
+            if (!fb) return;
+            blob = fb.blob;
+            sx = fb.sx;
+            sy = fb.sy;
+            sw = fb.sw;
+            sh = fb.sh;
+          }
+
           const url = URL.createObjectURL(blob);
           try {
             const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -694,7 +708,19 @@ async function stitchSatelliteCanvas(
             const dx1 = ((tx + 1 - fxMin) / (fxMax - fxMin)) * W;
             const dy0 = ((ty - fyMin) / (fyMax - fyMin)) * H;
             const dy1 = ((ty + 1 - fyMin) / (fyMax - fyMin)) * H;
-            ctx.drawImage(img, dx0, dy0, dx1 - dx0 + 0.6, dy1 - dy0 + 0.6);
+            const imgScaleX = img.naturalWidth > 0 ? img.naturalWidth / 256 : 1;
+            const imgScaleY = img.naturalHeight > 0 ? img.naturalHeight / 256 : 1;
+            ctx.drawImage(
+              img,
+              sx * imgScaleX,
+              sy * imgScaleY,
+              sw * imgScaleX,
+              sh * imgScaleY,
+              dx0,
+              dy0,
+              dx1 - dx0 + 0.6,
+              dy1 - dy0 + 0.6
+            );
           } catch {
             // keep topo fallback
           } finally {
