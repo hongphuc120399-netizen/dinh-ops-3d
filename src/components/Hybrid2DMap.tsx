@@ -721,28 +721,53 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
         .addTo(grp);
     }
 
-    // POIs
+    // POIs (Permanent labeled callout pills on key summits/junctions + compact dots elsewhere)
     if (showPois) {
+      const iconMap: Record<string, string> = {
+        peak: '⛰️',
+        viewpoint: '🚁',
+        temple: '⛩️',
+        water: '🌊',
+        camp: '⛺',
+        junction: '🔀',
+        boulder: '🧗',
+        historic: '🏛️',
+        warning: '⚠️'
+      };
+
+      const resolve2dMajorLabel = (poi: (typeof dataset.pois)[number]): { text: string; isSummit: boolean } | null => {
+        if (poi.id === 'verified-la-ban-helipad') return { text: 'ĐỈNH LA BÀN 495m', isSummit: true };
+        if (poi.id === 'osm-node-4789726675') return { text: 'ĐỈNH BAO QUAN 504m', isSummit: true };
+        if (poi.id === 'junc-4way-central') return { text: 'NGÃ 4 TRUNG TÂM', isSummit: false };
+        if (poi.id === 'junc-la-ban-turnoff') return { text: 'RẼ LA BÀN', isSummit: false };
+        if (poi.id === 'hazard-pipe-trap') return { text: 'BẪY ỐNG NƯỚC', isSummit: false };
+        if (poi.name.includes('Hang Tổ') && poi.category === 'temple') return { text: 'CHÙA HANG TỔ', isSummit: false };
+        if (poi.name.includes('Tây Phương') && poi.category === 'temple') return { text: 'CHÙA TÂY PHƯƠNG', isSummit: false };
+        if (poi.name.includes('Hồ Bên Suối')) return { text: 'HỒ BÊN SUỐI', isSummit: false };
+        if (poi.name.includes('Cô Kiều')) return { text: 'QUÁN CÔ KIỀU', isSummit: false };
+        return null;
+      };
+
       for (const poi of dataset.pois) {
-        const iconMap: Record<string, string> = {
-          peak: '⛰️',
-          viewpoint: '🚁',
-          temple: '⛩️',
-          water: '🌊',
-          camp: '⛺',
-          junction: '🔀',
-          boulder: '🧗',
-          historic: '🏛️',
-          warning: '⚠️'
-        };
+        if (poi.id === 'osm-node-5537927332') continue; // avoid duplicating verified-la-ban-helipad
         const em = iconMap[poi.category] || '📍';
+        const major = resolve2dMajorLabel(poi);
+
         const marker = L.marker([poi.lat, poi.lon], {
-          icon: L.divIcon({
-            className: 'poi-2d-chip',
-            html: `<div class="poi-dot">${em}</div>`,
-            iconSize: [26, 26],
-            iconAnchor: [13, 13]
-          })
+          icon: major
+            ? L.divIcon({
+                className: `poi-2d-labeled ${major.isSummit ? 'is-summit' : ''}`,
+                html: `<div class="poi-label-pill"><span class="plp-ico">${em}</span><b>${major.text}</b></div>`,
+                iconSize: [148, 24],
+                iconAnchor: [74, 12]
+              })
+            : L.divIcon({
+                className: 'poi-2d-chip',
+                html: `<div class="poi-dot">${em}</div>`,
+                iconSize: [26, 26],
+                iconAnchor: [13, 13]
+              }),
+          zIndexOffset: major?.isSummit ? 720 : major ? 480 : 120
         });
         marker.on('click', () => {
           onSelectTarget({
@@ -949,6 +974,16 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
           title={headingUp ? 'Đang xoay bản đồ 2D theo điện thoại' : 'Bật xoay bản đồ 2D theo hướng điện thoại'}
         >
           {headingUp ? 'H-UP' : 'BẮC'}
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            follow2DRef.current = false;
+            mapRef.current?.flyTo([10.53875, 107.12942], 16, { duration: 0.55 });
+          }}
+          title="Đưa bản đồ 2D tới Đỉnh La Bàn (Sân bay trực thăng 495m)"
+        >
+          LA BÀN
         </button>
         <button
           type="button"

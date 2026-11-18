@@ -3422,4 +3422,148 @@ select {
   .gta-dest-pulse::before {
     animation: none;
   }
+  .poi-label-pill {
+    transition: none;
+  }
+}
+
+/* ============================================================================
+   SUMMIT BADGES (3D & 2D), OUTSIDE-BOUNDS PILL & GPS DIAGNOSTIC CARD
+   ============================================================================ */
+.badge-3d.is-summit {
+  max-width: 210px;
+  padding: 3px 8px;
+  background: rgba(9, 14, 24, 0.94);
+  border-color: var(--accent-hud);
+  border-left-width: 3px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  color: #f8fafc;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.72), 0 0 10px rgba(125, 211, 252, 0.22);
+  z-index: 7;
+}
+
+.poi-2d-labeled {
+  background: transparent;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.poi-label-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 5px;
+  background: rgba(8, 12, 18, 0.92);
+  border: 1px solid var(--accent-border);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.65);
+  transform: rotate(var(--map-counter-rot, 0deg));
+  transition: transform 140ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.poi-2d-labeled.is-summit .poi-label-pill {
+  border-color: var(--accent-hud);
+  color: #f8fafc;
+  font-weight: 800;
+  background: rgba(11, 18, 30, 0.95);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.75);
+}
+
+.poi-label-pill .plp-ico {
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.out-of-bounds-gps-pill {
+  pointer-events: auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 999px;
+  max-width: min(520px, 94vw);
+  background: rgba(9, 15, 24, 0.92);
+  border: 1px solid var(--accent-blue);
+  color: var(--accent-hud);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.55);
+}
+
+.gps-diag-card {
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: rgba(7, 11, 18, 0.78);
+  border: 1px solid var(--accent-border);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 0.72rem;
+}
+
+.gps-diag-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.gps-perm-tag {
+  padding: 2px 7px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  background: rgba(148, 163, 184, 0.16);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: var(--text-secondary);
+}
+
+.gps-perm-tag.perm-granted {
+  background: rgba(48, 209, 88, 0.16);
+  border-color: rgba(48, 209, 88, 0.45);
+  color: #86efac;
+}
+
+.gps-perm-tag.perm-denied {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.5);
+  color: #fca5a5;
+}
+
+.gps-diag-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px 10px;
+  font-size: 0.69rem;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.gps-diag-grid b {
+  color: var(--text-primary);
+}
+
+.gps-diag-note {
+  font-size: 0.67rem;
+  color: var(--accent-gold);
+}
+
+.gps-diag-actions button {
+  width: 100%;
+  padding: 6px 10px;
+  border-radius: 8px;
+  font-size: 0.73rem;
+  font-weight: 700;
+  background: var(--accent-surface);
+  border-color: var(--accent-border);
+  color: var(--accent-hud);
 }

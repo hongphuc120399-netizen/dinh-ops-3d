@@ -1,4 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Capacitor } from '@capacitor/core';
+import { Geolocation } from '@capacitor/geolocation';
 import rawDataset from './data/nuiDinhDataset.json';
 import type {
   Camera3DMode,
@@ -120,6 +122,13 @@ export const App: React.FC = () => {
     smoothHeadingRef.current = compassHeading;
   }
   const [gpsStatusMsg, setGpsStatusMsg] = useState<string>('Chế độ Giả lập Thực địa');
+  const [gpsFixCount, setGpsFixCount] = useState<number>(0);
+  const [lastGpsFixTime, setLastGpsFixTime] = useState<number | null>(null);
+  const [gpsPermState, setGpsPermState] = useState<'prompt' | 'granted' | 'denied' | 'unknown'>('unknown');
+  const [gpsPrecisionNote, setGpsPrecisionNote] = useState<string | null>(null);
+  const isSimModeRef = useRef<boolean>(isSimMode);
+  isSimModeRef.current = isSimMode;
+  const manualGpsRefreshRef = useRef<(() => void) | null>(null);
   const [isOnline, setIsOnline] = useState<boolean>(navigator.onLine);
 
   // Tactical Data State (Persisted in IndexedDB!)
@@ -408,52 +417,288 @@ export const App: React.FC = () => {
     };
   }, [isRecordingTrack]);
 
-  // 3a. Real Hardware GNSS WatchPosition (When isSimMode === false)
+  // 3a-pre. Startup Auto-Field Detection (If already near Nui Dinh within 15km & permission granted, switch to Real GPS!)
+  useEffect(() => {
+    let cancelled = false;
+    const LA_BAN_LAT = 10.53875;
+    const LA_BAN_LON = 107.12942;
+
+    const handleProbeFix = (lat: number, lon: number, acc: number) => {
+      if (cancelled) return;
+      const dToNuiDinh = haversineDistanceM(lat, lon, LA_BAN_LAT, LA_BAN_LON);
+      if (dToNuiDinh <= 15000) {
+        setPlayerLat(lat);
+        setPlayerLon(lon);
+        setPlayerAccuracy(acc);
+        setGpsFixCount((c) => c + 1);
+        setLastGpsFixTime(Date.now());
+        setIsSimMode(false);
+        triggerToast('🛰️ Phát hiện bạn đang ở khu vực Núi Dinh — Đã tự động bật GPS Thật!');
+      }
+    };
+
+    const probeFieldLocation = async () => {
+      try {
+        if (Capacitor.isNativePlatform()) {
+          const perm = await Geolocation.checkPermissions();
+          if (cancelled) return;
+          if (perm.location === 'granted') {
+            setGpsPermState('granted');
+            setGpsPrecisionNote('Vị trí Chính xác (Fine GNSS)');
+            const pos = await Geolocation.getCurrentPosition({
+              enableHighAccuracy: false,
+              maximumAge: 60000,
+              timeout: 6000
+            });
+            handleProbeFix(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy);
+          } else if (perm.coarseLocation === 'granted') {
+            setGpsPermState('granted');
+            setGpsPrecisionNote('Chỉ có Vị trí gần đúng — Cần bật Chính xác');
+          } else if (perm.location === 'denied') {
+            setGpsPermState('denied');
+          } else {
+            setGpsPermState('prompt');
+          }
+          return;
+        }
+
+        if (navigator.permissions?.query) {
+          const permStatus = await navigator.permissions.query({ name: 'geolocation' });
+          if (cancelled) return;
+          setGpsPermState(permStatus.state);
+          if (permStatus.state === 'granted' && 'geolocation' in navigator) {
+            navigator.geolocation.getCurrentPosition(
+              (pos) => handleProbeFix(pos.coords.latitude, pos.coords.longitude, pos.coords.accuracy),
+              () => {},
+              { enableHighAccuracy: false, maximumAge: 60000, timeout: 6000 }
+            );
+          }
+        }
+      } catch {
+        // Ignore silent field probe errors
+      }
+    };
+
+    void probeFieldLocation();
+    return () => {
+      cancelled = true;
+    };
+  }, [triggerToast]);
+
+  // 3a. Dual-Engine Real Hardware GNSS WatchPosition (Capacitor Native + Web GNSS Fallback)
   useEffect(() => {
     if (isSimMode) {
+      manualGpsRefreshRef.current = null;
       setGpsStatusMsg('🎮 Đang bật Giả lập Thực địa Núi Dinh');
       return;
     }
 
-    if (!('geolocation' in navigator)) {
-      setGpsStatusMsg('⚠️ Thiết bị không hỗ trợ GPS');
-      return;
-    }
-
-    setGpsStatusMsg('🛰️ Đang bắt vệ tinh GNSS...');
+    let cancelled = false;
+    let nativeWatchId: string | null = null;
+    let webWatchId: number | null = null;
+    let webFallbackWatchId: number | null = null;
+    let reacquireInterval: number | null = null;
     let prevPos: { lat: number; lon: number } | null = null;
+    let lastFineFixAt = 0;
 
-    const watchId = navigator.geolocation.watchPosition(
-      (pos) => {
-        const { latitude, longitude, accuracy, heading, speed } = pos.coords;
-        setPlayerLat(latitude);
-        setPlayerLon(longitude);
-        setPlayerAccuracy(accuracy);
-        setSpeedMps(speed);
-        setGpsStatusMsg(`🛰️ GPS Thật (±${Math.round(accuracy)}m)`);
+    setGpsStatusMsg('🛰️ Đang xin quyền & bắt vệ tinh GNSS...');
 
-        if (heading !== null && !Number.isNaN(heading) && (speed ?? 0) > 0.4) {
-          setGpsCourse(heading);
-        } else if (prevPos) {
-          const moved = haversineDistanceM(prevPos.lat, prevPos.lon, latitude, longitude);
-          if (moved > 2.5) {
-            setGpsCourse(computeBearingDeg(prevPos.lat, prevPos.lon, latitude, longitude));
-          }
+    const acceptGpsFix = (coords: {
+      latitude: number;
+      longitude: number;
+      accuracy: number;
+      heading: number | null;
+      speed: number | null;
+    }) => {
+      if (cancelled || isSimModeRef.current) return;
+      const { latitude, longitude, accuracy, heading, speed } = coords;
+      const now = Date.now();
+      // Ignore noisy >120m cell-tower jumps when we already have a fresh (<6s) fine GPS lock (<30m)
+      if (accuracy > 120 && now - lastFineFixAt < 6000) return;
+      if (accuracy <= 30) lastFineFixAt = now;
+
+      setPlayerLat(latitude);
+      setPlayerLon(longitude);
+      setPlayerAccuracy(accuracy);
+      setSpeedMps(speed);
+      setGpsFixCount((c) => c + 1);
+      setLastGpsFixTime(now);
+      setGpsPermState('granted');
+      setGpsStatusMsg(`🛰️ GPS Thật (±${Math.round(accuracy)}m)`);
+
+      if (heading !== null && !Number.isNaN(heading) && (speed ?? 0) > 0.4) {
+        setGpsCourse(heading);
+      } else if (prevPos) {
+        const moved = haversineDistanceM(prevPos.lat, prevPos.lon, latitude, longitude);
+        if (moved > 2.5) {
+          setGpsCourse(computeBearingDeg(prevPos.lat, prevPos.lon, latitude, longitude));
         }
-        prevPos = { lat: latitude, lon: longitude };
-      },
-      (err) => {
-        setGpsStatusMsg(`⚠️ Lỗi GPS: ${err.message}`);
-      },
-      {
-        enableHighAccuracy: true,
-        maximumAge: 1000,
-        timeout: 15000
       }
-    );
+      prevPos = { lat: latitude, lon: longitude };
+    };
+
+    const requestImmediateWebFixes = () => {
+      if (!('geolocation' in navigator)) return;
+      navigator.geolocation.getCurrentPosition(
+        (pos) => acceptGpsFix(pos.coords),
+        () => {},
+        { enableHighAccuracy: false, maximumAge: 60000, timeout: 6000 }
+      );
+      navigator.geolocation.getCurrentPosition(
+        (pos) => acceptGpsFix(pos.coords),
+        () => {},
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }
+      );
+    };
+
+    const startWebWatch = (highAccuracy: boolean) => {
+      if (!('geolocation' in navigator) || cancelled) return;
+      const id = navigator.geolocation.watchPosition(
+        (pos) => acceptGpsFix(pos.coords),
+        (err) => {
+          if (cancelled) return;
+          if (err.code === 1) {
+            setGpsPermState('denied');
+            setGpsStatusMsg('⚠️ Bị từ chối quyền Vị trí (Kiểm tra Cài đặt)');
+          } else if (highAccuracy && !webFallbackWatchId) {
+            setGpsStatusMsg('🌲 Tán rừng rậm làm chậm GNSS — Đang dùng GPS hỗ trợ...');
+            startWebWatch(false);
+          } else {
+            setGpsStatusMsg(`⚠️ Lỗi GPS: ${err.message}`);
+          }
+        },
+        {
+          enableHighAccuracy: highAccuracy,
+          maximumAge: highAccuracy ? 1000 : 12000,
+          timeout: highAccuracy ? 15000 : 12000
+        }
+      );
+      if (highAccuracy) webWatchId = id;
+      else webFallbackWatchId = id;
+    };
+
+    const initGpsEngines = async () => {
+      if (Capacitor.isNativePlatform()) {
+        try {
+          let perm = await Geolocation.checkPermissions();
+          if (cancelled) return;
+          if (perm.location !== 'granted') {
+            perm = await Geolocation.requestPermissions({ permissions: ['location', 'coarseLocation'] });
+            if (cancelled) return;
+          }
+
+          if (perm.location === 'granted') {
+            setGpsPermState('granted');
+            setGpsPrecisionNote('Vị trí Chính xác (Fine GNSS)');
+          } else if (perm.coarseLocation === 'granted') {
+            setGpsPermState('granted');
+            setGpsPrecisionNote('Android chỉ cấp Vị trí gần đúng — hãy bật "Chính xác" trong Cài đặt');
+          } else {
+            setGpsPermState('denied');
+            setGpsPrecisionNote('Chưa cấp quyền Vị trí');
+            setGpsStatusMsg('⚠️ Vui lòng cấp quyền Vị trí cho Dinh Ops 3D trong Cài đặt Android');
+            return;
+          }
+
+          const kickNativeFixes = () => {
+            Geolocation.getCurrentPosition({
+              enableHighAccuracy: false,
+              maximumAge: 60000,
+              timeout: 6000
+            })
+              .then((pos) => acceptGpsFix(pos.coords))
+              .catch(() => {});
+
+            Geolocation.getCurrentPosition({
+              enableHighAccuracy: true,
+              maximumAge: 0,
+              timeout: 20000
+            })
+              .then((pos) => acceptGpsFix(pos.coords))
+              .catch(() => {});
+          };
+
+          manualGpsRefreshRef.current = kickNativeFixes;
+          kickNativeFixes();
+
+          const watchPromiseId = await Geolocation.watchPosition(
+            {
+              enableHighAccuracy: true,
+              maximumAge: 1000,
+              timeout: 15000,
+              minimumUpdateInterval: 1000
+            },
+            (pos, err) => {
+              if (cancelled) return;
+              if (pos) {
+                acceptGpsFix(pos.coords);
+              } else if (err) {
+                const msg = err?.message || String(err);
+                if (/timeout/i.test(msg)) {
+                  setGpsStatusMsg('🌲 Chờ vệ tinh dưới tán cây — Đang bù vị trí nhanh...');
+                  Geolocation.getCurrentPosition({
+                    enableHighAccuracy: false,
+                    maximumAge: 15000,
+                    timeout: 8000
+                  })
+                    .then((p) => acceptGpsFix(p.coords))
+                    .catch(() => {});
+                } else {
+                  setGpsStatusMsg(`⚠️ GPS Native: ${msg}`);
+                }
+              }
+            }
+          );
+
+          if (cancelled) {
+            void Geolocation.clearWatch({ id: watchPromiseId });
+          } else {
+            nativeWatchId = watchPromiseId;
+          }
+          return;
+        } catch {
+          // Fall back cleanly to WebView Geolocation API if Capacitor bridge fails
+        }
+      }
+
+      if (!('geolocation' in navigator)) {
+        setGpsStatusMsg('⚠️ Thiết bị không hỗ trợ GPS');
+        return;
+      }
+
+      manualGpsRefreshRef.current = requestImmediateWebFixes;
+      requestImmediateWebFixes();
+      startWebWatch(true);
+    };
+
+    void initGpsEngines();
+
+    const onVisibilityRestore = () => {
+      if (document.visibilityState === 'visible' && !cancelled) {
+        manualGpsRefreshRef.current?.();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityRestore);
+
+    // Periodic fine GNSS nudge every 25s in case canopy lock dropped temporarily
+    reacquireInterval = window.setInterval(() => {
+      if (!cancelled) manualGpsRefreshRef.current?.();
+    }, 25000);
 
     return () => {
-      navigator.geolocation.clearWatch(watchId);
+      cancelled = true;
+      manualGpsRefreshRef.current = null;
+      document.removeEventListener('visibilitychange', onVisibilityRestore);
+      if (reacquireInterval !== null) window.clearInterval(reacquireInterval);
+      if (nativeWatchId !== null) {
+        void Geolocation.clearWatch({ id: nativeWatchId });
+      }
+      if (webWatchId !== null && 'geolocation' in navigator) {
+        navigator.geolocation.clearWatch(webWatchId);
+      }
+      if (webFallbackWatchId !== null && 'geolocation' in navigator) {
+        navigator.geolocation.clearWatch(webFallbackWatchId);
+      }
     };
   }, [isSimMode]);
 
@@ -1189,6 +1434,18 @@ export const App: React.FC = () => {
             </div>
           )}
 
+          {!isSimMode &&
+            (playerLat < dataset.bounds.south - 0.005 ||
+              playerLat > dataset.bounds.north + 0.005 ||
+              playerLon < dataset.bounds.west - 0.005 ||
+              playerLon > dataset.bounds.east + 0.005) && (
+              <div className="out-of-bounds-gps-pill">
+                🛰️ GPS Thật OK (±{Math.round(playerAccuracy ?? 0)}m) • Cách Núi Dinh{' '}
+                {(haversineDistanceM(playerLat, playerLon, 10.53875, 107.12942) / 1000).toFixed(1)} km (Khi
+                tới núi Thứ 7 sẽ khớp trực tiếp lên 3D)
+              </div>
+            )}
+
           {safetyAlerts.length > 0 &&
             (safetyAlerts[0].level === 'critical' || safetyAlerts[0].title !== dismissedWarnTitle) && (
               <div
@@ -1527,6 +1784,59 @@ export const App: React.FC = () => {
             >
               🛰️ Bật GPS Thật Của Máy
             </button>
+          </div>
+
+          <div className="gps-diag-card">
+            <div className="gps-diag-head">
+              <strong>📡 Chẩn đoán GPS Thực địa Thứ 7</strong>
+              <span className={`gps-perm-tag perm-${gpsPermState}`}>
+                {gpsPermState === 'granted'
+                  ? 'ĐÃ CẤP QUYỀN'
+                  : gpsPermState === 'denied'
+                    ? 'BỊ TỪ CHỐI'
+                    : gpsPermState === 'prompt'
+                      ? 'CHỜ XÁC NHẬN'
+                      : 'SẴN SÀNG'}
+              </span>
+            </div>
+            <div className="gps-diag-grid">
+              <span>
+                Tọa độ: <b>{playerLat.toFixed(5)}, {playerLon.toFixed(5)}</b>
+              </span>
+              <span>
+                Sai số: <b>{playerAccuracy !== null ? `±${Math.round(playerAccuracy)}m` : '--'}</b> • Fix:{' '}
+                <b>{gpsFixCount}</b>
+              </span>
+              <span>
+                Cách Đỉnh La Bàn:{' '}
+                <b>{formatDistance(haversineDistanceM(playerLat, playerLon, 10.53875, 107.12942))}</b>
+              </span>
+              <span>
+                Cập nhật:{' '}
+                <b>
+                  {lastGpsFixTime
+                    ? `${Math.max(0, Math.round((Date.now() - lastGpsFixTime) / 1000))}s trước`
+                    : 'Chưa nhận fix thật'}
+                </b>
+              </span>
+            </div>
+            {gpsPrecisionNote && <div className="gps-diag-note">{gpsPrecisionNote}</div>}
+            <div className="gps-diag-actions">
+              <button
+                type="button"
+                onClick={() => {
+                  if (isSimMode) {
+                    setSimAutoWalk(false);
+                    setIsSimMode(false);
+                  } else {
+                    manualGpsRefreshRef.current?.();
+                    triggerToast('🛰️ Đang làm mới tín hiệu vệ tinh GNSS...');
+                  }
+                }}
+              >
+                {isSimMode ? '🛰️ Chuyển sang Bắt GPS Thật Ngay' : '🔄 Bắt Lại Vệ Tinh GNSS'}
+              </button>
+            </div>
           </div>
 
           {isSimMode && (

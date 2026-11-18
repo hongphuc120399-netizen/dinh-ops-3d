@@ -80,6 +80,7 @@ interface ProjectedBadge {
   y: number;
   isUserPin?: boolean;
   isLocked?: boolean;
+  isSummit?: boolean;
   pinRef?: UserPin;
   poiRef?: PoiItem;
 }
@@ -224,7 +225,23 @@ function clearAndDisposeGroup(grp: THREE.Group): void {
   }
 }
 
-function formatTacticalCallout(rawName: string): string {
+function formatTacticalCallout(rawName: string, category?: string): string {
+  if (rawName.includes('Bãi Đáp Trực Thăng') || rawName.includes('Chóp Đỉnh Núi Dinh')) {
+    return 'ĐỈNH LA BÀN (495M)';
+  }
+  if (rawName.includes('Mép Vực Không Lan Can')) return 'VỰC ĐỈNH LA BÀN';
+  if (rawName.includes('Ngã Ba Rẽ Lên Đỉnh La Bàn')) return 'NGÃ 3 RẼ LA BÀN';
+  if (rawName.includes('Bao Quan')) return 'ĐỈNH BAO QUAN (504M)';
+  if (rawName.includes('Chùa Hang Tổ')) return 'CHÙA HANG TỔ';
+  if (rawName.includes('Chùa Tây Phương')) {
+    return category === 'warning' ? 'ĐÈO CHÙA TÂY PHƯƠNG' : 'CHÙA TÂY PHƯƠNG';
+  }
+  if (rawName.includes('Ngã Ba Đường Ống Nước')) return 'BẪY NGÃ 3 ỐNG NƯỚC';
+  if (rawName.includes('Trạm Giao 4 Tuyến')) return 'NGÃ 4 TRUNG TÂM';
+  if (rawName.includes('Hồ Bên Suối')) return 'HỒ BÊN SUỐI DINH';
+  if (rawName.includes('Suối Đá') || rawName.includes('Suối Tiên')) return 'SUỐI ĐÁ • SUỐI TIÊN';
+  if (rawName.includes('Cô Kiều')) return 'QUÁN CÔ KIỀU';
+
   const withoutParens = rawName.replace(/\([^)]*\)/g, '').trim();
   const base = withoutParens.split(/[•\-–]/)[0]?.trim() || withoutParens;
   const cleaned = base
@@ -233,6 +250,13 @@ function formatTacticalCallout(rawName: string): string {
     .trim();
   const text = (cleaned || rawName).toUpperCase();
   return text.length > 22 ? `${text.slice(0, 21).trimEnd()}…` : text;
+}
+
+function clampLatLonToBounds(lat: number, lon: number, bounds: NuiDinhDataset['bounds']) {
+  return {
+    lat: Math.min(bounds.north, Math.max(bounds.south, lat)),
+    lon: Math.min(bounds.east, Math.max(bounds.west, lon))
+  };
 }
 
 function createCardinalSprite(label: string, color: string): {
@@ -1403,16 +1427,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       frameCounter++;
       const st = liveStateRef.current;
 
-      // Update Player 3D Position & Dual Heading smoothly (anchored directly on 3D triangle mesh!)
+      // Update Player 3D Position & Dual Heading smoothly (clamped inside 3D plinth bounds if user tests Real GPS far away!)
+      const clampedPlayer = clampLatLonToBounds(st.playerLat, st.playerLon, dataset.bounds);
       const groundPlayerEle = sampleDemElevation(
         dataset.dem,
         dataset.bounds,
-        st.playerLat,
-        st.playerLon
+        clampedPlayer.lat,
+        clampedPlayer.lon
       );
       const [px, py, pz] = latLonToWorld3D(
-        st.playerLat,
-        st.playerLon,
+        clampedPlayer.lat,
+        clampedPlayer.lon,
         groundPlayerEle,
         dataset.bounds,
         st.verticalScale
@@ -1586,48 +1611,55 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           }
         }
 
-        // 2. Strategic POIs (Sorted by priority + screen-space collision avoidance so labels never overlap!)
+        // 2. Strategic POIs (Sorted by priority + screen-space collision avoidance, Summits NEVER dropped!)
         if (st.showPois) {
           const candidates: (ProjectedBadge & { priority: number })[] = [];
           for (const poi of dataset.pois) {
+            if (poi.id === 'osm-node-5537927332') continue; // avoid duplicating verified-la-ban-helipad 25m away
             if (poi.name.startsWith('Đỉnh phụ') && poi.ele < 350) continue;
             const isLocked = st.lockedTarget?.id === poi.id;
-            if (st.hidePoiBadges && !isLocked) continue;
+            const isSummit = poi.id === 'verified-la-ban-helipad' || poi.id === 'osm-node-4789726675';
+            if (st.hidePoiBadges && !isLocked && !isSummit) continue;
+
             const priority = isLocked
               ? 100
-              : poi.id === 'verified-la-ban-helipad' ||
-                  poi.name === 'Núi Bao Quan' ||
-                  poi.id === 'junc-4way-central'
-                ? 94
-                : poi.category === 'warning'
-                  ? 86
-                  : poi.category === 'junction' ||
-                      poi.id.startsWith('verified-') ||
-                      poi.id === 'osm-thanh-gia-nui-dinh'
-                    ? 80
-                    : poi.id.startsWith('zone-') ||
-                        poi.name.includes('Hang Tổ') ||
-                        poi.name.includes('Hang Mai') ||
-                        poi.name.includes('Tây Phương') ||
-                        poi.name.includes('Phật Quang') ||
-                        poi.name.includes('Hồ Đá Xanh')
-                      ? 72
-                      : poi.category === 'peak' || poi.category === 'viewpoint' || poi.category === 'boulder'
-                        ? 55
-                        : 30;
+              : poi.id === 'verified-la-ban-helipad'
+                ? 99
+                : poi.id === 'osm-node-4789726675'
+                  ? 98
+                  : poi.id === 'junc-4way-central'
+                    ? 94
+                    : poi.category === 'warning'
+                      ? 86
+                      : poi.category === 'junction' ||
+                          poi.id.startsWith('verified-') ||
+                          poi.id === 'osm-thanh-gia-nui-dinh'
+                        ? 80
+                        : poi.id.startsWith('zone-') ||
+                            poi.name.includes('Hang Tổ') ||
+                            poi.name.includes('Hang Mai') ||
+                            poi.name.includes('Tây Phương') ||
+                            poi.name.includes('Phật Quang') ||
+                            poi.name.includes('Hồ Đá Xanh')
+                          ? 72
+                          : poi.category === 'peak' || poi.category === 'viewpoint' || poi.category === 'boulder'
+                            ? 55
+                            : 30;
 
             if (priority < 50) continue;
 
             const poiGroundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
             const [wx, wy, wz] = latLonToWorld3D(poi.lat, poi.lon, poiGroundEle, dataset.bounds, st.verticalScale);
-            tempV.set(wx, wy + 46, wz).project(camera);
+            tempV.set(wx, wy + (isSummit ? 82 : 46), wz).project(camera);
             if (tempV.z >= -1 && tempV.z <= 1) {
               const sx = (tempV.x * 0.5 + 0.5) * w;
               const sy = (-tempV.y * 0.5 + 0.5) * h;
-              const safeMarginX = Math.min(86, w * 0.2);
-              if (sx > safeMarginX && sx < w - safeMarginX && sy > 36 && sy < h - 42) {
+              const safeMarginX = isSummit ? 24 : Math.min(86, w * 0.2);
+              const minY = isSummit ? 24 : 36;
+              const maxY = isSummit ? h - 28 : h - 42;
+              if (sx > safeMarginX && sx < w - safeMarginX && sy > minY && sy < maxY) {
                 const stStyle = POI_STYLE[poi.category] || { emoji: '📍', color: '#94A3B8' };
-                const shortLabel = formatTacticalCallout(poi.name);
+                const shortLabel = formatTacticalCallout(poi.name, poi.category);
                 const cleanSub = shortLabel.includes(`${poi.ele}M`) ? undefined : `${poi.ele}m`;
                 candidates.push({
                   id: poi.id,
@@ -1638,6 +1670,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
                   x: sx,
                   y: sy,
                   isLocked,
+                  isSummit,
                   poiRef: poi,
                   priority
                 });
@@ -1646,14 +1679,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           }
 
           candidates.sort((a, b) => b.priority - a.priority);
-          const maxPois = h < 500 ? 4 : 6;
+          const maxPois = h < 500 ? 6 : 9;
           let placedPoiCount = 0;
           for (const cand of candidates) {
-            if (!cand.isLocked) {
+            if (!cand.isLocked && !cand.isSummit) {
               if (placedPoiCount >= maxPois) continue;
               const collides = nextBadges.some((placed) => {
-                const reqX = (placed.label.length + cand.label.length) * 3.4 + 48;
-                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 34;
+                const reqX = (placed.label.length + cand.label.length) * 3.4 + 44;
+                return Math.abs(placed.x - cand.x) < reqX && Math.abs(placed.y - cand.y) < 32;
               });
               if (collides) continue;
               placedPoiCount++;
@@ -1957,6 +1990,100 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           side: THREE.DoubleSide
         });
         grp.add(new THREE.Mesh(jRingGeo, jRingMat));
+      } else if (poi.id === 'verified-la-ban-helipad') {
+        // 3D Tactical Summit Helipad "H" & Beacon Spire at Đỉnh La Bàn (495m)
+        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
+        const [sx, sy, sz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
+        const padColor = palette === 'amber' ? 0xf59e0b : palette === 'olive' ? 0xbef264 : 0x7dd3fc;
+
+        const outerRingGeo = new THREE.RingGeometry(18, 26, 32);
+        outerRingGeo.rotateX(-Math.PI / 2);
+        outerRingGeo.translate(sx, sy + 6, sz);
+        grp.add(
+          new THREE.Mesh(
+            outerRingGeo,
+            new THREE.MeshBasicMaterial({
+              color: padColor,
+              transparent: true,
+              opacity: 0.9,
+              side: THREE.DoubleSide
+            })
+          )
+        );
+
+        const padDiscGeo = new THREE.CircleGeometry(17.5, 28);
+        padDiscGeo.rotateX(-Math.PI / 2);
+        padDiscGeo.translate(sx, sy + 5.2, sz);
+        grp.add(
+          new THREE.Mesh(
+            padDiscGeo,
+            new THREE.MeshBasicMaterial({
+              color: 0x09101a,
+              transparent: true,
+              opacity: 0.82,
+              side: THREE.DoubleSide
+            })
+          )
+        );
+
+        // Helipad "H" crossbars on summit rock platform
+        const hMat = new THREE.MeshBasicMaterial({ color: padColor, side: THREE.DoubleSide });
+        const leftBarGeo = new THREE.PlaneGeometry(4, 18);
+        leftBarGeo.rotateX(-Math.PI / 2);
+        leftBarGeo.translate(sx - 6, sy + 6.5, sz);
+        const rightBarGeo = new THREE.PlaneGeometry(4, 18);
+        rightBarGeo.rotateX(-Math.PI / 2);
+        rightBarGeo.translate(sx + 6, sy + 6.5, sz);
+        const midBarGeo = new THREE.PlaneGeometry(12, 3.6);
+        midBarGeo.rotateX(-Math.PI / 2);
+        midBarGeo.translate(sx, sy + 6.5, sz);
+        grp.add(new THREE.Mesh(leftBarGeo, hMat), new THREE.Mesh(rightBarGeo, hMat), new THREE.Mesh(midBarGeo, hMat));
+
+        const spireGeo = new THREE.CylinderGeometry(1.6, 5, 75, 10);
+        spireGeo.translate(sx, sy + 42, sz);
+        grp.add(
+          new THREE.Mesh(
+            spireGeo,
+            new THREE.MeshBasicMaterial({
+              color: padColor,
+              transparent: true,
+              opacity: 0.55
+            })
+          )
+        );
+      } else if (poi.id === 'osm-node-4789726675') {
+        // 3D Summit Beacon & Ring at Đỉnh Núi Bao Quan (504m)
+        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
+        const [bx, by, bz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
+        const summitCol = palette === 'vivid' ? 0xffd60a : 0xc8a25a;
+
+        const bRingGeo = new THREE.RingGeometry(15, 22, 28);
+        bRingGeo.rotateX(-Math.PI / 2);
+        bRingGeo.translate(bx, by + 5.5, bz);
+        grp.add(
+          new THREE.Mesh(
+            bRingGeo,
+            new THREE.MeshBasicMaterial({
+              color: summitCol,
+              transparent: true,
+              opacity: 0.85,
+              side: THREE.DoubleSide
+            })
+          )
+        );
+
+        const bSpireGeo = new THREE.CylinderGeometry(1.5, 4.5, 65, 10);
+        bSpireGeo.translate(bx, by + 37, bz);
+        grp.add(
+          new THREE.Mesh(
+            bSpireGeo,
+            new THREE.MeshBasicMaterial({
+              color: summitCol,
+              transparent: true,
+              opacity: 0.45
+            })
+          )
+        );
       }
     }
   }, [dataset, verticalScale, visibleRoutes, showAllTrails, importedGpx, skin, palette]);
@@ -2297,11 +2424,26 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     if (!sceneRef.current) return;
     followPlayerRef.current = true;
     const { camera, controls } = sceneRef.current;
-    const [px, py, pz] = latLonToWorld3D(playerLat, playerLon, playerEle, dataset.bounds, verticalScale);
+    const clamped = clampLatLonToBounds(playerLat, playerLon, dataset.bounds);
+    const clampedEle = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, clamped.lat, clamped.lon));
+    const [px, py, pz] = latLonToWorld3D(clamped.lat, clamped.lon, clampedEle, dataset.bounds, verticalScale);
     controls.target.set(px, py + 25, pz);
     camera.position.set(px - 260, py + 480, pz + 680);
     controls.update();
-  }, [dataset, playerLat, playerLon, playerEle, verticalScale]);
+  }, [dataset, playerLat, playerLon, verticalScale]);
+
+  const focusLaBan3D = useCallback(() => {
+    if (!sceneRef.current) return;
+    followPlayerRef.current = false;
+    const { camera, controls } = sceneRef.current;
+    const lat = 10.53875;
+    const lon = 107.12942;
+    const ele = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, lat, lon));
+    const [tx, ty, tz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
+    controls.target.set(tx, ty + 24, tz);
+    camera.position.set(tx - 320, ty + 460, tz + 560);
+    controls.update();
+  }, [dataset, verticalScale]);
 
   const snapCameraNorth3D = useCallback(() => {
     if (!sceneRef.current) return;
@@ -2341,7 +2483,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           <button
             key={b.id}
             type="button"
-            className={`badge-3d ${b.isUserPin ? 'is-user-pin' : ''} ${b.isLocked ? 'is-locked' : ''}`}
+            className={`badge-3d ${b.isUserPin ? 'is-user-pin' : ''} ${b.isLocked ? 'is-locked' : ''} ${b.isSummit ? 'is-summit' : ''}`}
             style={
               {
                 transform: `translate3d(${b.x}px, ${b.y}px, 0) translate(-50%, -100%)`,
@@ -2404,6 +2546,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
             <polygon points="12,22 8.5,12 15.5,12" fill="#94A3B8" />
           </svg>
           <span>{headingUp ? 'H-UP' : 'BẮC'}</span>
+        </button>
+
+        <button
+          type="button"
+          className="floating-recenter-btn"
+          onClick={focusLaBan3D}
+          title="Đưa camera 3D bay thẳng tới Đỉnh La Bàn (Sân bay trực thăng 495m)"
+        >
+          LA BÀN
         </button>
 
         <button
