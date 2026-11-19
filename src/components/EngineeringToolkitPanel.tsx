@@ -8,7 +8,7 @@ interface EngineeringToolkitPanelProps {
   onToggleRealSensor?: (enable: boolean) => void;
 }
 
-type EngSubTab = 'calc' | 'inclinometer' | 'knots' | 'sketch' | 'forces';
+type EngSubTab = 'measure' | 'calc' | 'field';
 type UnitCategory = 'length' | 'mass_force' | 'angle' | 'volume_pressure';
 
 interface UnitDef {
@@ -316,9 +316,9 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
   useRealSensor = false,
   onToggleRealSensor
 }) => {
-  const [subTab, setSubTab] = useState<EngSubTab>('calc');
+  const [subTab, setSubTab] = useState<EngSubTab>('measure');
 
-  // 1. Calculator, Scale & Unit Converter
+  // 1. Calculator, Scale & Unit Converter (with 1-tap accordions to avoid clutter)
   const [mathExpr, setMathExpr] = useState('sqrt(3^2 + 4^2)');
   const [calcHistory, setCalcHistory] = useState<{ expr: string; res: string }[]>([]);
   const [scaleDenom, setScaleDenom] = useState('10000');
@@ -327,19 +327,26 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
   const [unitVal, setUnitVal] = useState('100');
   const [fromUnit, setFromUnit] = useState('m');
   const [toUnit, setToUnit] = useState('ft');
+  const [openScale, setOpenScale] = useState(false);
+  const [openUnit, setOpenUnit] = useState(false);
 
-  // 2. Clinometer / Inclinometer State
+  // 2. Clinometer / Inclinometer & 2-Angle Sloped Height Estimator
   const [tarePitch, setTarePitch] = useState(0);
   const [simPitch, setSimPitch] = useState(18);
   const [isHeld, setIsHeld] = useState(false);
   const [heldPitch, setHeldPitch] = useState(0);
   const [heldRoll, setHeldRoll] = useState(0);
+  const [heightMode, setHeightMode] = useState<'slope2' | 'flat1'>('slope2');
   const [heightDistM, setHeightDistM] = useState('25');
   const [eyeHeightM, setEyeHeightM] = useState('1.6');
-  const [capturedAngleDeg, setCapturedAngleDeg] = useState<number | null>(null);
+  const [topAngleDeg, setTopAngleDeg] = useState<number | null>(null);
+  const [baseAngleDeg, setBaseAngleDeg] = useState<number | null>(null);
 
-  // 3. Knot Library Search
+  // 3. Knot Library Accordion & Field Tools
   const [knotQuery, setKnotQuery] = useState('');
+  const [openKnotId, setOpenKnotId] = useState<string | null>('bowline');
+  const [openForces, setOpenForces] = useState(false);
+  const [openSketch, setOpenSketch] = useState(false);
 
   // 4. Structure Sketchpad
   const [tool, setTool] = useState<SketchTool>('beam');
@@ -400,10 +407,17 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
   const displayRoll = isHeld ? heldRoll : rawActiveRoll;
   const pitchRad = (displayPitch * Math.PI) / 180;
   const slopePct = Math.abs(displayPitch) >= 89.5 ? Infinity : Math.tan(pitchRad) * 100;
-  const effectiveAngleForHeight = capturedAngleDeg ?? Math.abs(displayPitch);
+
+  // Accurate Height Computation:
+  // - Sloped 2-angle: H = D * |tan(theta_top) - tan(theta_base)| (exact regardless of hillside slope!)
+  // - Flat 1-angle:   H = D * tan(theta_top) + h_eye
+  const distNum = Math.max(0, parseFloat(heightDistM) || 0);
+  const effTopDeg = Math.max(-88, Math.min(88, topAngleDeg ?? displayPitch));
+  const effBaseDeg = Math.max(-88, Math.min(88, baseAngleDeg ?? 0));
   const measuredHeightM =
-    (parseFloat(heightDistM) || 0) * Math.tan((Math.min(89, effectiveAngleForHeight) * Math.PI) / 180) +
-    (parseFloat(eyeHeightM) || 0);
+    heightMode === 'slope2'
+      ? distNum * Math.abs(Math.tan((effTopDeg * Math.PI) / 180) - Math.tan((effBaseDeg * Math.PI) / 180))
+      : distNum * Math.tan((Math.max(0, effTopDeg) * Math.PI) / 180) + (parseFloat(eyeHeightM) || 0);
 
   // Save sketch automatically
   useEffect(() => {
@@ -430,9 +444,9 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
     return { memberCount, joints, minReq, isStiff };
   }, [shapes]);
 
-  // Render Sketch Canvas
+  // Render Sketch Canvas when open in Field tab
   useEffect(() => {
-    if (subTab !== 'sketch') return;
+    if (subTab !== 'field' || !openSketch) return;
     const canvas = sketchCanvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext('2d');
@@ -534,7 +548,7 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
 
     shapes.forEach((s) => drawItem(s));
     if (draftShape) drawItem(draftShape, true);
-  }, [subTab, shapes, draftShape]);
+  }, [subTab, openSketch, shapes, draftShape]);
 
   const getCanvasPoint = (e: React.PointerEvent<HTMLCanvasElement>): { x: number; y: number } => {
     const canvas = sketchCanvasRef.current!;
@@ -574,36 +588,244 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
 
   return (
     <div className="toolkit-body eng-toolkit-root">
+      {/* Streamlined 3-Tab Strip (from 5 tabs -> 3 high-clarity tabs) */}
       <div className="subtab-strip">
-        <button type="button" className={subTab === 'calc' ? 'active' : ''} onClick={() => setSubTab('calc')}>
-          🧮 Máy Tính
+        <button
+          type="button"
+          className={subTab === 'measure' ? 'active' : ''}
+          onClick={() => setSubTab('measure')}
+        >
+          📐 Đo Dốc &amp; Cao
         </button>
         <button
           type="button"
-          className={subTab === 'inclinometer' ? 'active' : ''}
-          onClick={() => setSubTab('inclinometer')}
+          className={subTab === 'calc' ? 'active' : ''}
+          onClick={() => setSubTab('calc')}
         >
-          📐 Góc Nghiêng
+          🧮 Tính &amp; Đổi
         </button>
-        <button type="button" className={subTab === 'knots' ? 'active' : ''} onClick={() => setSubTab('knots')}>
-          🪢 Nút Dây
-        </button>
-        <button type="button" className={subTab === 'sketch' ? 'active' : ''} onClick={() => setSubTab('sketch')}>
-          ✏️ Phác Thảo
-        </button>
-        <button type="button" className={subTab === 'forces' ? 'active' : ''} onClick={() => setSubTab('forces')}>
-          🏗️ Lực & Ổn Định
+        <button
+          type="button"
+          className={subTab === 'field' ? 'active' : ''}
+          onClick={() => setSubTab('field')}
+        >
+          🪢 Nút Dây &amp; Kết Cấu
         </button>
       </div>
 
-      {subTab === 'calc' && (
+      {/* TAB 1: Live Clinometer + Accurate 2-Angle Sloped Height Estimator */}
+      {subTab === 'measure' && (
         <div className="eng-stack">
-          {/* 1. Expression Scientific Calculator */}
+          <div className="eng-card clinometer-card">
+            <div className="eng-card-head">
+              <strong>📐 Thước Đo Góc Nghiêng</strong>
+              {onToggleRealSensor && (
+                <button
+                  type="button"
+                  className={`mini-toggle-btn ${useRealSensor ? 'active' : ''}`}
+                  onClick={() => onToggleRealSensor(!useRealSensor)}
+                >
+                  {useRealSensor ? '🛰️ Cảm Biến Thật' : '🎛️ Giả Lập'}
+                </button>
+              )}
+            </div>
+
+            <div className="clinometer-dial-row">
+              <svg width="96" height="96" viewBox="0 0 120 120" className="clinometer-svg">
+                <circle cx="60" cy="60" r="54" fill="rgba(0,0,0,0.35)" stroke="var(--accent-border)" strokeWidth="2" />
+                <line x1="6" y1="60" x2="114" y2="60" stroke="rgba(148,163,184,0.35)" strokeDasharray="3,3" />
+                <line x1="60" y1="6" x2="60" y2="114" stroke="rgba(148,163,184,0.35)" strokeDasharray="3,3" />
+                <g transform={`rotate(${-displayPitch} 60 60)`}>
+                  <line x1="16" y1="60" x2="104" y2="60" stroke="var(--accent-hud)" strokeWidth="3.5" strokeLinecap="round" />
+                  <circle cx="100" cy="60" r="4" fill="var(--accent-gold)" />
+                </g>
+                <circle cx="60" cy="60" r="4" fill="#f8fafc" />
+              </svg>
+
+              <div className="clinometer-metrics">
+                <div>
+                  <small>GÓC NGHIÊNG (PITCH)</small>
+                  <strong className="clino-big">{displayPitch.toFixed(1)}°</strong>
+                </div>
+                <div>
+                  <small>ĐỘ DỐC (%) • NGHIÊNG NGANG</small>
+                  <strong>
+                    {Number.isFinite(slopePct) ? `${slopePct.toFixed(1)}%` : '∞'} • {displayRoll.toFixed(1)}°
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            <div className="clino-actions-row">
+              <button
+                type="button"
+                className={`secondary-action-btn ${isHeld ? 'active-pill-btn' : ''}`}
+                onClick={() => {
+                  if (!isHeld) {
+                    setHeldPitch(rawActivePitch);
+                    setHeldRoll(rawActiveRoll);
+                  }
+                  setIsHeld((v) => !v);
+                }}
+              >
+                {isHeld ? '▶️ Bỏ giữ' : '⏸️ Giữ số'}
+              </button>
+              <button
+                type="button"
+                className="secondary-action-btn"
+                onClick={() => setTarePitch(tarePitch === 0 ? (useRealSensor ? pitchDeg : simPitch) : 0)}
+              >
+                {tarePitch === 0 ? '🎯 Về 0° (Tare)' : '↺ Gốc máy'}
+              </button>
+            </div>
+
+            {!useRealSensor && (
+              <div className="sim-compass-row">
+                <label>Góc giả lập (Test): {simPitch}°</label>
+                <input
+                  type="range"
+                  min={-65}
+                  max={65}
+                  value={simPitch}
+                  onChange={(e) => setSimPitch(Number(e.target.value))}
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Upgraded Height Measurement: 2-Angle Sloped Ground (Accurate!) vs 1-Angle Flat Ground */}
           <div className="eng-card">
             <div className="eng-card-head">
-              <strong>🧮 Máy Tính Khoa Học (Góc tính theo Độ °)</strong>
+              <strong>🌲 Đo Chiều Cao Cây / Vách Đá</strong>
+              <span className="eng-result-pill">H ≈ {measuredHeightM.toFixed(2)} m</span>
+            </div>
+
+            <div className="chip-row">
+              <button
+                type="button"
+                className={heightMode === 'slope2' ? 'active' : ''}
+                onClick={() => setHeightMode('slope2')}
+              >
+                ⛰️ Sườn Dốc (2 Góc — Chính xác)
+              </button>
+              <button
+                type="button"
+                className={heightMode === 'flat1' ? 'active' : ''}
+                onClick={() => setHeightMode('flat1')}
+              >
+                📏 Đất Phẳng (1 Góc)
+              </button>
+            </div>
+
+            {heightMode === 'slope2' ? (
+              <>
+                <div className="tri-mode-explain">
+                  Chính xác cả khi đứng trên sườn dốc: nhập khoảng cách ngang <strong>D</strong>, ngắm đỉnh bấm <strong>Chốt Đỉnh</strong>, ngắm gốc bấm <strong>Chốt Chân</strong>.
+                </div>
+                <div className="form-group">
+                  <label>Khoảng cách ngang tới vật D (mét)</label>
+                  <input
+                    type="number"
+                    min={0.5}
+                    value={heightDistM}
+                    onChange={(e) => setHeightDistM(e.target.value)}
+                  />
+                </div>
+                <div className="clino-actions-row">
+                  <button
+                    type="button"
+                    className="primary-action-btn"
+                    onClick={() => setTopAngleDeg(Number(displayPitch.toFixed(1)))}
+                  >
+                    📌 Chốt Đỉnh ({topAngleDeg !== null ? `${topAngleDeg}°` : `${displayPitch.toFixed(1)}°`})
+                  </button>
+                  <button
+                    type="button"
+                    className="secondary-action-btn"
+                    onClick={() => setBaseAngleDeg(Number(displayPitch.toFixed(1)))}
+                  >
+                    📌 Chốt Chân ({baseAngleDeg !== null ? `${baseAngleDeg}°` : `${displayPitch.toFixed(1)}°`})
+                  </button>
+                </div>
+                <div className="eng-stat-line">
+                  θ_đỉnh = <strong>{effTopDeg.toFixed(1)}°</strong> • θ_chân ={' '}
+                  <strong>{effBaseDeg.toFixed(1)}°</strong> →{' '}
+                  <strong>H = {measuredHeightM.toFixed(2)} m</strong>
+                  {(topAngleDeg !== null || baseAngleDeg !== null) && (
+                    <>
+                      {' '}
+                      <button
+                        type="button"
+                        className="ota-mini-link"
+                        onClick={() => {
+                          setTopAngleDeg(null);
+                          setBaseAngleDeg(null);
+                        }}
+                      >
+                        ↺ Đặt lại
+                      </button>
+                    </>
+                  )}
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="two-col-inputs">
+                  <div className="form-group">
+                    <label>Khoảng cách ngang D (m)</label>
+                    <input
+                      type="number"
+                      min={0.5}
+                      value={heightDistM}
+                      onChange={(e) => setHeightDistM(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Tầm mắt h₀ (m)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={eyeHeightM}
+                      onChange={(e) => setEyeHeightM(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div className="clino-actions-row">
+                  <button
+                    type="button"
+                    className="primary-action-btn"
+                    onClick={() => setTopAngleDeg(Number(Math.abs(displayPitch).toFixed(1)))}
+                  >
+                    📌 Chốt góc đang đo ({Math.abs(displayPitch).toFixed(1)}°)
+                  </button>
+                  {topAngleDeg !== null && (
+                    <button
+                      type="button"
+                      className="secondary-action-btn"
+                      onClick={() => setTopAngleDeg(null)}
+                    >
+                      ↺ Theo góc live
+                    </button>
+                  )}
+                </div>
+                <div className="eng-stat-line">
+                  θ = <strong>{Math.max(0, effTopDeg).toFixed(1)}°</strong> →{' '}
+                  <strong>H = {measuredHeightM.toFixed(2)} m</strong>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: Quick Scientific Calculator + 1-Tap Collapsible Map Scale & Unit Converter */}
+      {subTab === 'calc' && (
+        <div className="eng-stack">
+          <div className="eng-card">
+            <div className="eng-card-head">
+              <strong>🧮 Máy Tính Nhanh (Góc theo Độ °)</strong>
               <span className="eng-result-pill">
-                = {liveMathValue === null ? 'Lỗi cú pháp' : Number(liveMathValue.toPrecision(9)).toString()}
+                = {liveMathValue === null ? 'Lỗi' : Number(liveMathValue.toPrecision(9)).toString()}
               </span>
             </div>
             <div className="calc-input-row">
@@ -642,475 +864,353 @@ export const EngineeringToolkitPanel: React.FC<EngineeringToolkitPanelProps> = (
             )}
           </div>
 
-          {/* 2. Scale Calculator */}
-          <div className="eng-card">
-            <div className="eng-card-head">
-              <strong>📏 Tính Tỷ Lệ Bản Đồ / Bản Vẽ (1 : {scaleDenom || '1'})</strong>
-            </div>
-            <div className="two-col-inputs">
-              <div className="form-group">
-                <label>Tỷ lệ (1 : N)</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={scaleDenom}
-                  onChange={(e) => setScaleDenom(e.target.value)}
-                />
-              </div>
-              <div className="form-group">
-                <label>Đo trên bản vẽ/bản đồ (cm)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={scaleMapCm}
-                  onChange={(e) => setScaleMapCm(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="preset-chips">
-              {[50, 100, 1000, 5000, 10000, 25000].map((s) => (
-                <button key={s} type="button" onClick={() => setScaleDenom(String(s))}>
-                  1:{s.toLocaleString()}
-                </button>
-              ))}
-            </div>
-            <div className="eng-stat-line">
-              Thực tế: <strong>{scaleStats.realM.toFixed(2)} m</strong> ({scaleStats.realKm.toFixed(4)} km) •
-              1 cm = <strong>{scaleStats.oneCmM} m</strong>
-            </div>
-          </div>
-
-          {/* 3. Unit Converter */}
-          <div className="eng-card">
-            <div className="eng-card-head">
-              <strong>🔄 Chuyển Đổi Đơn Vị</strong>
-            </div>
-            <div className="chip-row">
-              {(Object.keys(UNIT_TABLES) as UnitCategory[]).map((catKey) => (
-                <button
-                  key={catKey}
-                  type="button"
-                  className={unitCat === catKey ? 'active' : ''}
-                  onClick={() => {
-                    setUnitCat(catKey);
-                    const list = UNIT_TABLES[catKey].units;
-                    setFromUnit(list[0].id);
-                    setToUnit((list[1] || list[0]).id);
-                  }}
-                >
-                  {UNIT_TABLES[catKey].title}
-                </button>
-              ))}
-            </div>
-            <div className="unit-conv-row">
-              <input
-                type="number"
-                value={unitVal}
-                onChange={(e) => setUnitVal(e.target.value)}
-              />
-              <select value={fromUnit} onChange={(e) => setFromUnit(e.target.value)}>
-                {UNIT_TABLES[unitCat].units.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.label}
-                  </option>
-                ))}
-              </select>
-              <span>→</span>
-              <select value={toUnit} onChange={(e) => setToUnit(e.target.value)}>
-                {UNIT_TABLES[unitCat].units.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="eng-stat-line">
-              Kết quả quy đổi: <strong>{convertedVal} {toUnit}</strong>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {subTab === 'inclinometer' && (
-        <div className="eng-stack">
-          <div className="eng-card clinometer-card">
-            <div className="eng-card-head">
-              <strong>📐 Đo Góc Nghiêng (Clinometer Cảm Biến)</strong>
-              {onToggleRealSensor && (
-                <button
-                  type="button"
-                  className={`mini-toggle-btn ${useRealSensor ? 'active' : ''}`}
-                  onClick={() => onToggleRealSensor(!useRealSensor)}
-                >
-                  {useRealSensor ? '🛰️ Đang dùng Cảm Biến' : '🎛️ Đang Giả Lập'}
-                </button>
-              )}
-            </div>
-
-            <div className="clinometer-dial-row">
-              <svg width="110" height="110" viewBox="0 0 120 120" className="clinometer-svg">
-                <circle cx="60" cy="60" r="54" fill="rgba(0,0,0,0.35)" stroke="var(--accent-border)" strokeWidth="2" />
-                <line x1="6" y1="60" x2="114" y2="60" stroke="rgba(148,163,184,0.35)" strokeDasharray="3,3" />
-                <line x1="60" y1="6" x2="60" y2="114" stroke="rgba(148,163,184,0.35)" strokeDasharray="3,3" />
-                <g transform={`rotate(${-displayPitch} 60 60)`}>
-                  <line x1="16" y1="60" x2="104" y2="60" stroke="var(--accent-hud)" strokeWidth="3.5" strokeLinecap="round" />
-                  <circle cx="100" cy="60" r="4" fill="var(--accent-gold)" />
-                </g>
-                <circle cx="60" cy="60" r="4" fill="#f8fafc" />
-              </svg>
-
-              <div className="clinometer-metrics">
-                <div>
-                  <small>GÓC NGHIÊNG (PITCH)</small>
-                  <strong className="clino-big">{displayPitch.toFixed(1)}°</strong>
+          {/* 1-Tap Collapsible Map Scale */}
+          <div className="simple-accordion">
+            <button
+              type="button"
+              className="simple-accordion-btn"
+              onClick={() => setOpenScale((v) => !v)}
+            >
+              <span>
+                📏 Tỷ Lệ Bản Đồ <strong>1:{scaleDenom || '1'}</strong> • {scaleMapCm}cm ={' '}
+                <strong>{scaleStats.realM.toFixed(1)}m</strong>
+              </span>
+              <strong>{openScale ? '▴' : '▾'}</strong>
+            </button>
+            {openScale && (
+              <div className="simple-accordion-body">
+                <div className="two-col-inputs">
+                  <div className="form-group">
+                    <label>Tỷ lệ (1 : N)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={scaleDenom}
+                      onChange={(e) => setScaleDenom(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Đo trên bản đồ (cm)</label>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={scaleMapCm}
+                      onChange={(e) => setScaleMapCm(e.target.value)}
+                    />
+                  </div>
                 </div>
-                <div>
-                  <small>ĐỘ DỐC (%) / ROLL</small>
-                  <strong>
-                    {Number.isFinite(slopePct) ? `${slopePct.toFixed(1)}%` : '∞'} • {displayRoll.toFixed(1)}°
-                  </strong>
+                <div className="preset-chips">
+                  {[50, 100, 1000, 5000, 10000, 25000].map((s) => (
+                    <button key={s} type="button" onClick={() => setScaleDenom(String(s))}>
+                      1:{s.toLocaleString()}
+                    </button>
+                  ))}
                 </div>
-              </div>
-            </div>
-
-            <div className="clino-actions-row">
-              <button
-                type="button"
-                className="secondary-action-btn"
-                onClick={() => setTarePitch(useRealSensor ? pitchDeg : simPitch)}
-              >
-                🎯 Đặt mốc 0° (Tare)
-              </button>
-              <button type="button" className="secondary-action-btn" onClick={() => setTarePitch(0)}>
-                ↺ Gốc 0° máy
-              </button>
-              <button
-                type="button"
-                className={`secondary-action-btn ${isHeld ? 'active-pill-btn' : ''}`}
-                onClick={() => {
-                  if (!isHeld) {
-                    setHeldPitch(rawActivePitch);
-                    setHeldRoll(rawActiveRoll);
-                  }
-                  setIsHeld((v) => !v);
-                }}
-              >
-                {isHeld ? '▶️ Bỏ giữ (HOLD)' : '⏸️ Giữ số đo'}
-              </button>
-            </div>
-
-            {!useRealSensor && (
-              <div className="sim-compass-row">
-                <label>Thanh chỉnh góc nghiêng giả lập (test trên PC): {simPitch}°</label>
-                <input
-                  type="range"
-                  min={-65}
-                  max={65}
-                  value={simPitch}
-                  onChange={(e) => setSimPitch(Number(e.target.value))}
-                />
+                <div className="eng-stat-line">
+                  Thực tế: <strong>{scaleStats.realM.toFixed(2)} m</strong> ({scaleStats.realKm.toFixed(3)} km) • 1 cm ={' '}
+                  <strong>{scaleStats.oneCmM} m</strong>
+                </div>
               </div>
             )}
           </div>
 
-          <div className="eng-card">
-            <div className="eng-card-head">
-              <strong>🌲 Tính Chiều Cao Vật Thể Qua Góc Nghiêng</strong>
-            </div>
-            <p className="helper-note">
-              Đứng cách chân cây/trụ cổng <strong>D (m)</strong>, ngắm mép điện thoại lên đỉnh vật rồi chốt góc θ:
-            </p>
-            <div className="two-col-inputs">
-              <div className="form-group">
-                <label>Khoảng cách ngang D (m)</label>
-                <input
-                  type="number"
-                  value={heightDistM}
-                  onChange={(e) => setHeightDistM(e.target.value)}
-                />
+          {/* 1-Tap Collapsible Unit Converter */}
+          <div className="simple-accordion">
+            <button
+              type="button"
+              className="simple-accordion-btn"
+              onClick={() => setOpenUnit((v) => !v)}
+            >
+              <span>
+                🔄 Đổi Đơn Vị: <strong>{unitVal} {fromUnit}</strong> ={' '}
+                <strong>{convertedVal} {toUnit}</strong>
+              </span>
+              <strong>{openUnit ? '▴' : '▾'}</strong>
+            </button>
+            {openUnit && (
+              <div className="simple-accordion-body">
+                <div className="chip-row">
+                  {(Object.keys(UNIT_TABLES) as UnitCategory[]).map((catKey) => (
+                    <button
+                      key={catKey}
+                      type="button"
+                      className={unitCat === catKey ? 'active' : ''}
+                      onClick={() => {
+                        setUnitCat(catKey);
+                        const list = UNIT_TABLES[catKey].units;
+                        setFromUnit(list[0].id);
+                        setToUnit((list[1] || list[0]).id);
+                      }}
+                    >
+                      {UNIT_TABLES[catKey].title}
+                    </button>
+                  ))}
+                </div>
+                <div className="unit-conv-row">
+                  <input
+                    type="number"
+                    value={unitVal}
+                    onChange={(e) => setUnitVal(e.target.value)}
+                  />
+                  <select value={fromUnit} onChange={(e) => setFromUnit(e.target.value)}>
+                    {UNIT_TABLES[unitCat].units.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
+                  <span>→</span>
+                  <select value={toUnit} onChange={(e) => setToUnit(e.target.value)}>
+                    {UNIT_TABLES[unitCat].units.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
-              <div className="form-group">
-                <label>Độ cao tầm mắt h₀ (m)</label>
-                <input
-                  type="number"
-                  step="0.1"
-                  value={eyeHeightM}
-                  onChange={(e) => setEyeHeightM(e.target.value)}
-                />
-              </div>
-            </div>
-            <div className="clino-actions-row">
-              <button
-                type="button"
-                className="primary-action-btn"
-                onClick={() => setCapturedAngleDeg(Number(Math.abs(displayPitch).toFixed(1)))}
-              >
-                📌 Chốt góc đang đo ({Math.abs(displayPitch).toFixed(1)}°)
-              </button>
-              {capturedAngleDeg !== null && (
-                <button
-                  type="button"
-                  className="secondary-action-btn"
-                  onClick={() => setCapturedAngleDeg(null)}
-                >
-                  ↺ Theo góc live
-                </button>
-              )}
-            </div>
-            <div className="eng-stat-line">
-              Góc θ = <strong>{effectiveAngleForHeight.toFixed(1)}°</strong> → Chiều cao H ≈{' '}
-              <strong>{measuredHeightM.toFixed(2)} m</strong>
-            </div>
+            )}
           </div>
         </div>
       )}
 
-      {subTab === 'knots' && (
+      {/* TAB 3: Compact Collapsible Knots + V-Sling Force Calculator + Structure Sketchpad */}
+      {subTab === 'field' && (
         <div className="eng-stack">
           <input
             type="text"
             className="search-input"
             value={knotQuery}
             onChange={(e) => setKnotQuery(e.target.value)}
-            placeholder="🔍 Tìm nhanh: ghế đơn, số 8, thợ dệt, ráp cây, prusik, lều..."
+            placeholder="🔍 Tìm nhanh nút dây: ghế đơn, số 8, thợ dệt, ráp cây, prusik..."
           />
+
           <div className="knots-list">
-            {filteredKnots.map((k) => (
-              <div key={k.id} className="eng-card knot-card">
-                <div className="knot-top">
-                  <KnotDiagramSvg id={k.id} />
-                  <div className="knot-meta">
-                    <strong>{k.name}</strong>
-                    <span className="mono-sub">
-                      {k.enName} • {k.strength}
-                    </span>
-                    <p>{k.useCase}</p>
+            {filteredKnots.map((k) => {
+              const isOpen = openKnotId === k.id;
+              return (
+                <div key={k.id} className="simple-accordion">
+                  <button
+                    type="button"
+                    className="simple-accordion-btn knot-accordion-head"
+                    onClick={() => setOpenKnotId(isOpen ? null : k.id)}
+                  >
+                    <div>
+                      <strong>🪢 {k.name}</strong>
+                      <div className="mono-sub">{k.useCase}</div>
+                    </div>
+                    <strong>{isOpen ? '▴' : '▾'}</strong>
+                  </button>
+                  {isOpen && (
+                    <div className="simple-accordion-body">
+                      <div className="knot-top">
+                        <KnotDiagramSvg id={k.id} />
+                        <div className="knot-meta">
+                          <span className="mono-sub">
+                            {k.enName} • {k.strength}
+                          </span>
+                          <ol className="knot-steps">
+                            {k.steps.map((st, idx) => (
+                              <li key={idx}>{st}</li>
+                            ))}
+                          </ol>
+                        </div>
+                      </div>
+                      <div className="knot-warn">⚠️ {k.warning}</div>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 1-Tap Collapsible V-Sling Tension Calculator */}
+          <div className="simple-accordion">
+            <button
+              type="button"
+              className="simple-accordion-btn"
+              onClick={() => setOpenForces((v) => !v)}
+            >
+              <span>
+                ⚖️ Lực Dây Chữ V ({slingAngleDeg}°) →{' '}
+                <strong>{slingStats.perLegKg.toFixed(1)} kgf/nhánh</strong>{' '}
+                {slingStats.danger ? '⚠️' : '✅'}
+              </span>
+              <strong>{openForces ? '▴' : '▾'}</strong>
+            </button>
+            {openForces && (
+              <div className="simple-accordion-body">
+                <div className="two-col-inputs">
+                  <div className="form-group">
+                    <label>Tổng tải W (kg)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={loadKg}
+                      onChange={(e) => setLoadKg(e.target.value)}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Góc mở 2 dây α = {slingAngleDeg}°</label>
+                    <input
+                      type="range"
+                      min={0}
+                      max={170}
+                      step={5}
+                      value={slingAngleDeg}
+                      onChange={(e) => setSlingAngleDeg(Number(e.target.value))}
+                    />
                   </div>
                 </div>
-                <ol className="knot-steps">
-                  {k.steps.map((st, idx) => (
-                    <li key={idx}>{st}</li>
+                <div className="force-diagram-row">
+                  <svg width="92" height="72" viewBox="0 0 92 72">
+                    <rect x="1" y="1" width="90" height="70" rx="6" fill="rgba(0,0,0,0.3)" stroke="var(--accent-border)" />
+                    <line
+                      x1="46"
+                      y1="48"
+                      x2={46 - Math.sin(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
+                      y2={48 - Math.cos(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
+                      stroke={slingStats.danger ? '#c26d68' : '#d49b54'}
+                      strokeWidth="2.5"
+                    />
+                    <line
+                      x1="46"
+                      y1="48"
+                      x2={46 + Math.sin(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
+                      y2={48 - Math.cos(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
+                      stroke={slingStats.danger ? '#c26d68' : '#d49b54'}
+                      strokeWidth="2.5"
+                    />
+                    <circle cx="46" cy="54" r="7" fill="var(--accent-surface)" stroke="var(--accent-hud)" />
+                  </svg>
+                  <div className="force-readout">
+                    <div>
+                      Mỗi nhánh: <strong>{slingStats.perLegKg.toFixed(1)} kgf</strong> ({slingStats.perLegKn.toFixed(2)} kN) •{' '}
+                      <strong>{slingStats.factorPct}%</strong> tải
+                    </div>
+                    <div className={slingStats.danger ? 'force-danger-txt' : 'mono-sub'}>
+                      {slingStats.danger
+                        ? '⚠️ Góc ≥ 120°: Lực kéo mỗi dây vượt 100% tải! Thu hẹp ≤ 90°.'
+                        : '✅ Góc an toàn (khuyên dùng ≤ 60°–90°).'}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* 1-Tap Collapsible Structure Sketchpad */}
+          <div className="simple-accordion">
+            <button
+              type="button"
+              className="simple-accordion-btn"
+              onClick={() => setOpenSketch((v) => !v)}
+            >
+              <span>
+                ✏️ Bảng Phác Thảo Kết Cấu ({sketchMetrics.memberCount} thanh)
+              </span>
+              <strong>{openSketch ? '▴' : '▾'}</strong>
+            </button>
+            {openSketch && (
+              <div className="simple-accordion-body">
+                <div className="sketch-toolbar">
+                  {(
+                    [
+                      ['beam', '➖ Gỗ'],
+                      ['cable', '┄ Dây'],
+                      ['support', '▲ Neo'],
+                      ['load', '⬇ Tải'],
+                      ['free', '✏️ Tự do']
+                    ] as [SketchTool, string][]
+                  ).map(([k, lbl]) => (
+                    <button
+                      key={k}
+                      type="button"
+                      className={tool === k ? 'active' : ''}
+                      onClick={() => setTool(k)}
+                    >
+                      {lbl}
+                    </button>
                   ))}
-                </ol>
-                <div className="knot-warn">⚠️ {k.warning}</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {subTab === 'sketch' && (
-        <div className="eng-stack">
-          <div className="sketch-toolbar">
-            {(
-              [
-                ['beam', '➖ Thanh gỗ'],
-                ['cable', '┄ Dây neo'],
-                ['support', '▲ Gối neo'],
-                ['load', '⬇ Tải trọng'],
-                ['free', '✏️ Tự do']
-              ] as [SketchTool, string][]
-            ).map(([k, lbl]) => (
-              <button
-                key={k}
-                type="button"
-                className={tool === k ? 'active' : ''}
-                onClick={() => setTool(k)}
-              >
-                {lbl}
-              </button>
-            ))}
-            <button
-              type="button"
-              className={snapGrid ? 'active' : ''}
-              onClick={() => setSnapGrid((v) => !v)}
-            >
-              ⊞ Bắt lưới
-            </button>
-          </div>
-
-          <canvas
-            ref={sketchCanvasRef}
-            width={SKETCH_W}
-            height={SKETCH_H}
-            className="structure-canvas"
-            onPointerDown={(e) => {
-              e.currentTarget.setPointerCapture(e.pointerId);
-              const pt = getCanvasPoint(e);
-              if (tool === 'support') {
-                setShapes((prev) => [...prev, { kind: 'support', x: pt.x, y: pt.y }]);
-              } else if (tool === 'free') {
-                setDraftShape({ kind: 'free', points: [pt] });
-              } else {
-                setDraftShape({ kind: tool, x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y });
-              }
-            }}
-            onPointerMove={(e) => {
-              if (!draftShape) return;
-              const pt = getCanvasPoint(e);
-              if (draftShape.kind === 'free') {
-                setDraftShape({ ...draftShape, points: [...draftShape.points, pt] });
-              } else if (draftShape.kind !== 'support') {
-                setDraftShape({ ...draftShape, x2: pt.x, y2: pt.y });
-              }
-            }}
-            onPointerUp={() => {
-              if (!draftShape) return;
-              if (draftShape.kind === 'free') {
-                if (draftShape.points.length > 1) setShapes((prev) => [...prev, draftShape]);
-              } else if (draftShape.kind !== 'support') {
-                if (Math.hypot(draftShape.x2 - draftShape.x1, draftShape.y2 - draftShape.y1) > 6) {
-                  setShapes((prev) => [...prev, draftShape]);
-                }
-              }
-              setDraftShape(null);
-            }}
-          />
-
-          <div className="eng-stat-line">
-            1 ô lưới = 0.5m • Thanh/Dây M = <strong>{sketchMetrics.memberCount}</strong> • Nút J ={' '}
-            <strong>{sketchMetrics.joints}</strong> •{' '}
-            {sketchMetrics.memberCount === 0
-              ? 'Chạm kéo trên lưới để phác thảo'
-              : sketchMetrics.isStiff
-                ? `✅ Đạt ngưỡng tam giác cứng (M ≥ 2J−3 = ${sketchMetrics.minReq})`
-                : `⚠️ Khung dễ xô nghiêng (nên thêm giằng chéo đạt M ≥ ${sketchMetrics.minReq})`}
-          </div>
-
-          <div className="sketch-actions-row">
-            <button type="button" onClick={() => setShapes(SKETCH_PRESETS.a_frame)}>
-              Mẫu: Khung Chữ A
-            </button>
-            <button type="button" onClick={() => setShapes(SKETCH_PRESETS.bridge_truss)}>
-              Mẫu: Cầu Giàn
-            </button>
-            <button type="button" onClick={() => setShapes(SKETCH_PRESETS.tower_guy)}>
-              Mẫu: Tháp Dây Neo
-            </button>
-            <button type="button" onClick={() => setShapes(SKETCH_PRESETS.z_drag)}>
-              Mẫu: Ròng Rọc Z-Drag
-            </button>
-            <button type="button" onClick={() => setShapes((p) => p.slice(0, -1))}>
-              ↩ Hoàn tác
-            </button>
-            <button type="button" onClick={() => setShapes([])}>
-              🧹 Xóa trắng
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const c = sketchCanvasRef.current;
-                if (!c) return;
-                const a = document.createElement('a');
-                a.href = c.toDataURL('image/png');
-                a.download = `phac-thao-ket-cau-${Date.now()}.png`;
-                a.click();
-              }}
-            >
-              📥 Xuất PNG
-            </button>
-          </div>
-        </div>
-      )}
-
-      {subTab === 'forces' && (
-        <div className="eng-stack">
-          {/* Interactive V-Sling / Guy-Wire Force Calculator */}
-          <div className="eng-card">
-            <div className="eng-card-head">
-              <strong>⚖️ Tính Lực Căng Dây Chữ V Theo Góc Mở (T = W / 2cos(α/2))</strong>
-            </div>
-            <div className="two-col-inputs">
-              <div className="form-group">
-                <label>Tổng tải trọng W (kg)</label>
-                <input
-                  type="number"
-                  min={1}
-                  value={loadKg}
-                  onChange={(e) => setLoadKg(e.target.value)}
-                />
-              </div>
-              <div className="form-group">
-                <label>Góc mở 2 nhánh dây α = {slingAngleDeg}°</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={170}
-                  step={5}
-                  value={slingAngleDeg}
-                  onChange={(e) => setSlingAngleDeg(Number(e.target.value))}
-                />
-              </div>
-            </div>
-            <div className="force-diagram-row">
-              <svg width="92" height="72" viewBox="0 0 92 72">
-                <rect x="1" y="1" width="90" height="70" rx="6" fill="rgba(0,0,0,0.3)" stroke="var(--accent-border)" />
-                <line
-                  x1="46"
-                  y1="48"
-                  x2={46 - Math.sin(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
-                  y2={48 - Math.cos(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
-                  stroke={slingStats.danger ? '#c26d68' : '#d49b54'}
-                  strokeWidth="2.5"
-                />
-                <line
-                  x1="46"
-                  y1="48"
-                  x2={46 + Math.sin(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
-                  y2={48 - Math.cos(((slingAngleDeg / 2) * Math.PI) / 180) * 34}
-                  stroke={slingStats.danger ? '#c26d68' : '#d49b54'}
-                  strokeWidth="2.5"
-                />
-                <circle cx="46" cy="54" r="7" fill="var(--accent-surface)" stroke="var(--accent-hud)" />
-              </svg>
-              <div className="force-readout">
-                <div>
-                  Lực căng mỗi nhánh: <strong>{slingStats.perLegKg.toFixed(1)} kgf</strong> (
-                  {slingStats.perLegKn.toFixed(2)} kN)
+                  <button
+                    type="button"
+                    className={snapGrid ? 'active' : ''}
+                    onClick={() => setSnapGrid((v) => !v)}
+                  >
+                    ⊞ Lưới
+                  </button>
                 </div>
-                <div>
-                  Tỷ lệ lực / tải: <strong>{slingStats.factorPct}%</strong>
+
+                <canvas
+                  ref={sketchCanvasRef}
+                  width={SKETCH_W}
+                  height={SKETCH_H}
+                  className="structure-canvas"
+                  onPointerDown={(e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId);
+                    const pt = getCanvasPoint(e);
+                    if (tool === 'support') {
+                      setShapes((prev) => [...prev, { kind: 'support', x: pt.x, y: pt.y }]);
+                    } else if (tool === 'free') {
+                      setDraftShape({ kind: 'free', points: [pt] });
+                    } else {
+                      setDraftShape({ kind: tool, x1: pt.x, y1: pt.y, x2: pt.x, y2: pt.y });
+                    }
+                  }}
+                  onPointerMove={(e) => {
+                    if (!draftShape) return;
+                    const pt = getCanvasPoint(e);
+                    if (draftShape.kind === 'free') {
+                      setDraftShape({ ...draftShape, points: [...draftShape.points, pt] });
+                    } else if (draftShape.kind !== 'support') {
+                      setDraftShape({ ...draftShape, x2: pt.x, y2: pt.y });
+                    }
+                  }}
+                  onPointerUp={() => {
+                    if (!draftShape) return;
+                    if (draftShape.kind === 'free') {
+                      if (draftShape.points.length > 1) setShapes((prev) => [...prev, draftShape]);
+                    } else if (draftShape.kind !== 'support') {
+                      if (Math.hypot(draftShape.x2 - draftShape.x1, draftShape.y2 - draftShape.y1) > 6) {
+                        setShapes((prev) => [...prev, draftShape]);
+                      }
+                    }
+                    setDraftShape(null);
+                  }}
+                />
+
+                <div className="eng-stat-line">
+                  M = <strong>{sketchMetrics.memberCount}</strong> • J = <strong>{sketchMetrics.joints}</strong> •{' '}
+                  {sketchMetrics.memberCount === 0
+                    ? 'Chạm kéo để vẽ'
+                    : sketchMetrics.isStiff
+                      ? `✅ Đủ giằng cứng (M ≥ ${sketchMetrics.minReq})`
+                      : `⚠️ Nên thêm giằng chéo (M ≥ ${sketchMetrics.minReq})`}
                 </div>
-                <div className={slingStats.danger ? 'force-danger-txt' : 'mono-sub'}>
-                  {slingStats.danger
-                    ? '⚠️ Cảnh báo góc mở ≥ 120°: Lực kéo trên MỖI sợi dây vượt quá 100% tải trọng! Hãy thu hẹp góc ≤ 90°.'
-                    : '✅ Góc an toàn (khuyên dùng ≤ 60°–90°).'}
+
+                <div className="sketch-actions-row">
+                  <button type="button" onClick={() => setShapes(SKETCH_PRESETS.a_frame)}>
+                    Khung A
+                  </button>
+                  <button type="button" onClick={() => setShapes(SKETCH_PRESETS.bridge_truss)}>
+                    Cầu Giàn
+                  </button>
+                  <button type="button" onClick={() => setShapes(SKETCH_PRESETS.tower_guy)}>
+                    Tháp Neo
+                  </button>
+                  <button type="button" onClick={() => setShapes(SKETCH_PRESETS.z_drag)}>
+                    Z-Drag
+                  </button>
+                  <button type="button" onClick={() => setShapes((p) => p.slice(0, -1))}>
+                    ↩
+                  </button>
+                  <button type="button" onClick={() => setShapes([])}>
+                    🧹
+                  </button>
                 </div>
               </div>
-            </div>
+            )}
           </div>
-
-          {/* Engineering Reference Cards */}
-          <div className="formula-ref-list">
-            <div className="formula-card">
-              <strong>🔺 Quy tắc Tam Giác Hóa (Triangulation)</strong>
-              <p>
-                Khung hình chữ nhật rất dễ bị xô thành hình bình hành khi có lực ngang. Luôn đóng thêm{' '}
-                <strong>thanh giằng chéo</strong> biến ô vuông thành 2 hình tam giác — tam giác là hình duy nhất không biến dạng cạnh khi chịu lực.
-              </p>
-            </div>
-            <div className="formula-card">
-              <strong>🪵 Nén (Compression) vs Kéo (Tension)</strong>
-              <p>
-                Cột chống chịu <strong>Nén</strong> (thanh càng dài càng dễ oằn bụng → cần thanh giằng ngang chia đôi chiều dài). Dây chằng chỉ chịu <strong>Kéo</strong> (bố trí góc 45° so với mặt đất để cân bằng lực giữ ngang và lực đè xuống).
-              </p>
-            </div>
-            <div className="formula-card">
-              <strong>⛺ Chân Đế, Cọc Neo & Trọng Tâm</strong>
-              <p>
-                Cắm cọc lều nghiêng <strong>45° ngược hướng kéo của dây</strong>, dùng nút neo đôi ở đất mềm. Với giàn tháp cao, mở rộng chân đế tối thiểu bằng 1/3 chiều cao để giữ trọng tâm luôn rơi trong mặt đáy.
-              </p>
-            </div>
-            <div className="formula-card">
-              <strong>⚙️ Hệ Ròng Rọc Lợi Lực (Z-Drag 3:1)</strong>
-              <p>
-                Mỗi puly di động gắn vào vật tải nhân lực kéo lên theo lý thuyết (2:1, 3:1 với nút Prusik kẹp hoàn hồi). Trong thực tế có ma sát nên lợi lực thực đạt khoảng 70–85% lý thuyết; lưu ý lực tác động lên điểm neo gốc bằng tổng tải cộng lực kéo.
-              </p>
-            </div>
-          </div>
-          <p className="helper-note">
-            ⓘ Mọi chỉ số & hướng dẫn kỹ thuật ở trên mang tính tham khảo thực địa / dựng trại. Với công trình chịu tải người hoặc kết cấu cố định, luôn kiểm tra hệ số an toàn thực tế tại hiện trường.
-          </p>
         </div>
       )}
     </div>

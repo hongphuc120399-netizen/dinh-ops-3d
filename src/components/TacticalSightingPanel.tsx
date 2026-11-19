@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { NuiDinhDataset, TacticalTarget, UserPin } from '../types';
+import type { NuiDinhDataset, PoiItem, TacticalTarget, UserPin } from '../types';
 import {
   computeBearingDeg,
   formatBearingCardinal,
@@ -9,7 +9,8 @@ import {
   intersectTwoCircles,
   parseFlexibleCoordinateInput,
   projectPointByBearing,
-  sampleDemElevation
+  sampleDemElevation,
+  wgs84MetersPerDeg
 } from '../utils/geoMath';
 
 export interface PinRequestPayload {
@@ -34,8 +35,8 @@ interface TacticalSightingPanelProps {
   onPinTargets: (items: PinRequestPayload[], closeModal?: boolean) => void;
 }
 
-type SightingSubTab = 'triangulation' | 'ar' | 'project';
-type TriMode = 'bearing' | 'circle';
+type SightMode = 'project' | 'bearing' | 'circle';
+type BearingSubMode = 'forward' | 'resection';
 
 interface ArSnapshot {
   lat: number;
@@ -51,6 +52,21 @@ interface ResolvedStation {
   label: string;
   valid: boolean;
 }
+
+const KEY_LANDMARK_IDS = new Set([
+  'verified-la-ban-helipad',
+  'osm-node-4789726675',
+  'osm-node-5537927361',
+  'osm-node-5537927362',
+  'verified-suoi-da-thac-ha',
+  'verified-ho-ben-suoi',
+  'verified-quan-co-kieu',
+  'osm-node-5666383122',
+  'junc-4way-central',
+  'junc-la-ban-turnoff',
+  'verified-red-trailhead-suoida',
+  'osm-node-5537927353'
+]);
 
 function resolveStationByKey(
   key: string,
@@ -97,16 +113,34 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   onToggleRealSensor,
   onPinTargets
 }) => {
-  const [subTab, setSubTab] = useState<SightingSubTab>('triangulation');
-  const [triMode, setTriMode] = useState<TriMode>('bearing');
+  const [mode, setMode] = useState<SightMode>('bearing');
+  const [bearingSubMode, setBearingSubMode] = useState<BearingSubMode>('forward');
   const [noteBanner, setNoteBanner] = useState<string | null>(null);
 
-  // Station A & B States (Default A = current position, B = Dinh La Ban or nearest junction)
+  // Organize ALL 84 POIs cleanly with Key Landmarks prioritized first (fixes .slice(0, 35) truncation!)
+  const { keyPois, otherPois } = useMemo(() => {
+    const keyList: PoiItem[] = [];
+    const rest: PoiItem[] = [];
+    for (const p of dataset.pois) {
+      if (KEY_LANDMARK_IDS.has(p.id)) keyList.push(p);
+      else rest.push(p);
+    }
+    return { keyPois: keyList, otherPois: rest };
+  }, [dataset.pois]);
+
+  const laBanId = useMemo(
+    () => dataset.pois.find((p) => p.id === 'verified-la-ban-helipad')?.id || dataset.pois[0]?.id || 'current',
+    [dataset.pois]
+  );
+  const baoQuanId = useMemo(
+    () => dataset.pois.find((p) => p.id === 'osm-node-4789726675')?.id || dataset.pois[1]?.id || laBanId,
+    [dataset.pois, laBanId]
+  );
+
+  // Station A & B States
   const [stationAKey, setStationAKey] = useState<string>('current');
   const [customAInput, setCustomAInput] = useState<string>('');
-  const [stationBKey, setStationBKey] = useState<string>(
-    () => dataset.pois[0]?.id || 'current'
-  );
+  const [stationBKey, setStationBKey] = useState<string>(() => laBanId);
   const [customBInput, setCustomBInput] = useState<string>('');
 
   // Bearing Triangulation Angles & Circle Radii
@@ -123,7 +157,9 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   );
   const [projDistM, setProjDistM] = useState<string>('350');
 
-  // AR Camera Sighting (#6) State
+  // Inline AR Camera Sighting Drawer (no tab switching required!)
+  const [showArDrawer, setShowArDrawer] = useState<boolean>(false);
+  const [arTargetSlot, setArTargetSlot] = useState<'A' | 'B' | 'proj' | 'free'>('free');
   const [arCamActive, setArCamActive] = useState<boolean>(false);
   const [arCamError, setArCamError] = useState<string | null>(null);
   const [arSnapA, setArSnapA] = useState<ArSnapshot | null>(null);
@@ -141,7 +177,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     setNoteBanner(msg);
     window.setTimeout(() => {
       setNoteBanner((prev) => (prev === msg ? null : prev));
-    }, 3400);
+    }, 3200);
   }, []);
 
   const stopArCamera = useCallback(() => {
@@ -153,10 +189,10 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   }, []);
 
   useEffect(() => {
-    if (subTab !== 'ar') {
+    if (!showArDrawer) {
       stopArCamera();
     }
-  }, [subTab, stopArCamera]);
+  }, [showArDrawer, stopArCamera]);
 
   useEffect(() => {
     return () => {
@@ -167,14 +203,14 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   }, []);
 
   useEffect(() => {
-    if (!arCamActive || subTab !== 'ar') return;
+    if (!arCamActive || !showArDrawer) return;
     let cancelled = false;
 
     const startCam = async () => {
       setArCamError(null);
       try {
         if (!navigator.mediaDevices?.getUserMedia) {
-          setArCamError('WebView không hỗ trợ mở camera trực tiếp — vẫn dùng được kính ngắm cảm biến.');
+          setArCamError('Máy không mở được camera trực tiếp — vẫn ngắm chuẩn theo cảm biến la bàn bên dưới.');
           return;
         }
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -192,7 +228,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
         }
       } catch (err) {
         setArCamError(
-          `Không bật được camera (${err instanceof Error ? err.message : 'bị từ chối quyền'}). Dùng kính ngắm cảm biến bên dưới.`
+          `Không bật được camera (${err instanceof Error ? err.message : 'từ chối quyền'}) — vẫn dùng được kính ngắm cảm biến.`
         );
       }
     };
@@ -201,9 +237,33 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     return () => {
       cancelled = true;
     };
-  }, [arCamActive, subTab]);
+  }, [arCamActive, showArDrawer]);
 
-  // Resolve Stations A & B
+  const handleSwitchBearingSubMode = (next: BearingSubMode) => {
+    setBearingSubMode(next);
+    if (next === 'resection') {
+      // Standing at unknown position sighting 2 known peaks -> auto-select 2 prominent peaks if currently on 'current'
+      if (stationAKey === 'current' || stationAKey === 'ar') {
+        setStationAKey(laBanId);
+      }
+      if (stationBKey === 'current' || stationBKey === 'ar' || stationBKey === laBanId) {
+        setStationBKey(baoQuanId);
+      }
+    } else if (stationAKey === laBanId && stationBKey === baoQuanId) {
+      setStationAKey('current');
+    }
+  };
+
+  const openInlineArFor = (slot: 'A' | 'B' | 'proj' | 'free') => {
+    setArTargetSlot(slot);
+    setShowArDrawer(true);
+    setArCamActive(true);
+    if (!useRealSensor && onToggleRealSensor) {
+      onToggleRealSensor(true);
+    }
+  };
+
+  // Resolve Stations A, B & Projection Origin
   const stationA = useMemo(
     () => resolveStationByKey(stationAKey, customAInput, arSnapA, playerLat, playerLon, dataset, userPins),
     [stationAKey, customAInput, arSnapA, playerLat, playerLon, dataset, userPins]
@@ -212,25 +272,42 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     () => resolveStationByKey(stationBKey, customBInput, arSnapB, playerLat, playerLon, dataset, userPins),
     [stationBKey, customBInput, arSnapB, playerLat, playerLon, dataset, userPins]
   );
-
   const projOrigin = useMemo(
     () => resolveStationByKey(projOriginKey, projCustomInput, arSnapA, playerLat, playerLon, dataset, userPins),
     [projOriginKey, projCustomInput, arSnapA, playerLat, playerLon, dataset, userPins]
   );
 
+  // Effective bearings (Resection automatically inverts sighting angles by +180° -> zero human error!)
+  const effectiveBearingA = useMemo(() => {
+    const raw = parseFloat(bearingA);
+    if (!Number.isFinite(raw)) return NaN;
+    return bearingSubMode === 'resection' ? (((raw + 180) % 360) + 360) % 360 : ((raw % 360) + 360) % 360;
+  }, [bearingA, bearingSubMode]);
+
+  const effectiveBearingB = useMemo(() => {
+    const raw = parseFloat(bearingB);
+    if (!Number.isFinite(raw)) return NaN;
+    return bearingSubMode === 'resection' ? (((raw + 180) % 360) + 360) % 360 : ((raw % 360) + 360) % 360;
+  }, [bearingB, bearingSubMode]);
+
   // Bearing Intersection Calculation
   const bearingResult = useMemo(() => {
     if (!stationA.valid || !stationB.valid) return null;
-    const bA = parseFloat(bearingA);
-    const bB = parseFloat(bearingB);
-    if (!Number.isFinite(bA) || !Number.isFinite(bB)) return null;
-    const res = intersectTwoBearings(stationA.lat, stationA.lon, bA, stationB.lat, stationB.lon, bB);
+    if (!Number.isFinite(effectiveBearingA) || !Number.isFinite(effectiveBearingB)) return null;
+    const res = intersectTwoBearings(
+      stationA.lat,
+      stationA.lon,
+      effectiveBearingA,
+      stationB.lat,
+      stationB.lon,
+      effectiveBearingB
+    );
     const ele =
       res.lat !== null && res.lon !== null
         ? Math.round(sampleDemElevation(dataset.dem, dataset.bounds, res.lat, res.lon))
         : null;
     return { ...res, ele };
-  }, [stationA, stationB, bearingA, bearingB, dataset]);
+  }, [stationA, stationB, effectiveBearingA, effectiveBearingB, dataset]);
 
   // Circle Intersection Calculation
   const circleResult = useMemo(() => {
@@ -244,13 +321,24 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     return { ...res, e1, e2 };
   }, [stationA, stationB, radiusA, radiusB, dataset]);
 
-  // SVG Schematic Projection Builder for Triangulation / Trilateration
+  // Live Single-Ray Preview (shows exact destination coordinate & DEM elevation before pinning!)
+  const projPreview = useMemo(() => {
+    if (!projOrigin.valid) return null;
+    const az = parseFloat(projAzimuth);
+    const dist = parseFloat(projDistM);
+    if (!Number.isFinite(az) || !Number.isFinite(dist) || dist <= 0) return null;
+    const dest = projectPointByBearing(projOrigin.lat, projOrigin.lon, az, dist);
+    const originEle = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, projOrigin.lat, projOrigin.lon));
+    const destEle = Math.round(sampleDemElevation(dataset.dem, dataset.bounds, dest.lat, dest.lon));
+    return { ...dest, az: ((az % 360) + 360) % 360, dist, destEle, eleDiff: destEle - originEle };
+  }, [projOrigin, projAzimuth, projDistM, dataset]);
+
+  // SVG Schematic Projection Builder using exact WGS84 ellipsoid scaling
   const svgDiagram = useMemo(() => {
     const W = 280;
-    const H = 152;
-    const pad = 24;
-    const mPerLon = 111319.5 * Math.cos(((stationA.lat + stationB.lat) / 2) * (Math.PI / 180));
-    const mPerLat = 110605.0;
+    const H = 144;
+    const pad = 22;
+    const { mPerLat, mPerLon } = wgs84MetersPerDeg((stationA.lat + stationB.lat) / 2);
     const bx = (stationB.lon - stationA.lon) * mPerLon;
     const by = (stationB.lat - stationA.lat) * mPerLat;
 
@@ -261,12 +349,12 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
 
     let r1 = 0;
     let r2 = 0;
-    if (triMode === 'bearing' && bearingResult && bearingResult.lat !== null && bearingResult.lon !== null) {
+    if (mode === 'bearing' && bearingResult && bearingResult.lat !== null && bearingResult.lon !== null) {
       pts.push({
         x: (bearingResult.lon - stationA.lon) * mPerLon,
         y: (bearingResult.lat - stationA.lat) * mPerLat
       });
-    } else if (triMode === 'circle' && circleResult) {
+    } else if (mode === 'circle' && circleResult) {
       r1 = Math.max(1, parseFloat(radiusA) || 1);
       r2 = Math.max(1, parseFloat(radiusB) || 1);
       pts.push({ x: -r1, y: -r1 }, { x: r1, y: r1 }, { x: bx - r2, y: by - r2 }, { x: bx + r2, y: by + r2 });
@@ -302,14 +390,14 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
 
     const pA = toSvg(0, 0);
     const pB = toSvg(bx, by);
-    const bA = ((parseFloat(bearingA) || 0) * Math.PI) / 180;
-    const bB = ((parseFloat(bearingB) || 0) * Math.PI) / 180;
+    const bA = ((Number.isFinite(effectiveBearingA) ? effectiveBearingA : 0) * Math.PI) / 180;
+    const bB = ((Number.isFinite(effectiveBearingB) ? effectiveBearingB : 0) * Math.PI) / 180;
     const rayLen = span * 0.85;
     const rayAEnd = toSvg(Math.sin(bA) * rayLen, Math.cos(bA) * rayLen);
     const rayBEnd = toSvg(bx + Math.sin(bB) * rayLen, by + Math.cos(bB) * rayLen);
 
     const pHit =
-      triMode === 'bearing' && bearingResult && bearingResult.lat !== null && bearingResult.lon !== null
+      mode === 'bearing' && bearingResult && bearingResult.lat !== null && bearingResult.lon !== null
         ? toSvg(
             (bearingResult.lon - stationA.lon) * mPerLon,
             (bearingResult.lat - stationA.lat) * mPerLat
@@ -317,14 +405,14 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
         : null;
 
     const pC1 =
-      triMode === 'circle' && circleResult?.p1
+      mode === 'circle' && circleResult?.p1
         ? toSvg(
             (circleResult.p1.lon - stationA.lon) * mPerLon,
             (circleResult.p1.lat - stationA.lat) * mPerLat
           )
         : null;
     const pC2 =
-      triMode === 'circle' && circleResult?.p2
+      mode === 'circle' && circleResult?.p2
         ? toSvg(
             (circleResult.p2.lon - stationA.lon) * mPerLon,
             (circleResult.p2.lat - stationA.lat) * mPerLat
@@ -344,7 +432,17 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
       r1Px: r1 * scale,
       r2Px: r2 * scale
     };
-  }, [stationA, stationB, triMode, bearingA, bearingB, radiusA, radiusB, bearingResult, circleResult]);
+  }, [
+    stationA,
+    stationB,
+    mode,
+    effectiveBearingA,
+    effectiveBearingB,
+    radiusA,
+    radiusB,
+    bearingResult,
+    circleResult
+  ]);
 
   // AR HUD Target Metrics
   const normHeading = ((Math.round(compassHeading) % 360) + 360) % 360;
@@ -370,22 +468,42 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
           📷 {snap.label} ({Math.round(snap.heading)}°)
         </option>
       )}
-      {userPins.map((u) => (
-        <option key={`pin:${u.id}`} value={`pin:${u.id}`}>
-          🪨 {u.name}
-        </option>
-      ))}
-      {dataset.pois.slice(0, 35).map((p) => (
-        <option key={p.id} value={p.id}>
-          {p.name} ({p.ele}m)
-        </option>
-      ))}
-      <option value="custom">✏️ Tự nhập tọa độ...</option>
+      <optgroup label="⭐ Mốc Trọng Yếu Núi Dinh">
+        {keyPois.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name} ({p.ele}m)
+          </option>
+        ))}
+      </optgroup>
+      {userPins.length > 0 && (
+        <optgroup label={`🪨 Ghim Của Tôi (${userPins.length})`}>
+          {userPins.map((u) => (
+            <option key={`pin:${u.id}`} value={`pin:${u.id}`}>
+              🪨 {u.name}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      <optgroup label={`⛰️ Tất Cả Địa Danh Khác (${otherPois.length})`}>
+        {otherPois.map((p) => (
+          <option key={p.id} value={p.id}>
+            {p.name} ({p.ele}m)
+          </option>
+        ))}
+      </optgroup>
+      <option value="custom">✏️ Tự nhập tọa độ / Plus Code...</option>
     </>
   );
 
-  const captureFromAr = (slot: 'A' | 'B') => {
+  const captureFromAr = (slot: 'A' | 'B' | 'proj') => {
     const h = normHeading;
+    if (slot === 'proj') {
+      setProjAzimuth(String(h));
+      setShowArDrawer(false);
+      notify(`📌 Đã chốt góc ngắm ${h}° vào Chiếu 1 Tia!`);
+      return;
+    }
+
     const snap: ArSnapshot = {
       lat: playerLat,
       lon: playerLon,
@@ -394,66 +512,321 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
       label: `AR ${slot} ∠${String(h).padStart(3, '0')}°`
     };
     if (slot === 'A') {
-      setArSnapA(snap);
-      setStationAKey('ar');
+      if (bearingSubMode === 'forward') {
+        setArSnapA(snap);
+        setStationAKey('ar');
+      }
       setBearingA(String(h));
-      notify(`📌 Đã chốt Tia A: ${h}° tại vị trí hiện tại!`);
+      notify(`📌 Đã chốt góc Tia A: ${h}°!`);
     } else {
-      setArSnapB(snap);
-      setStationBKey('ar');
+      if (bearingSubMode === 'forward') {
+        setArSnapB(snap);
+        setStationBKey('ar');
+      }
       setBearingB(String(h));
-      notify(`📌 Đã chốt Tia B: ${h}° tại vị trí hiện tại!`);
+      notify(`📌 Đã chốt góc Tia B: ${h}°!`);
     }
+    setShowArDrawer(false);
   };
 
   return (
     <div className="toolkit-body eng-toolkit-root">
+      {/* 1-Row Unified Mission Selector + Inline AR Toggle */}
       <div className="subtab-strip">
         <button
           type="button"
-          className={subTab === 'triangulation' ? 'active' : ''}
-          onClick={() => setSubTab('triangulation')}
+          className={mode === 'project' ? 'active' : ''}
+          onClick={() => setMode('project')}
         >
-          📐 Giao Hội (#1)
-        </button>
-        <button type="button" className={subTab === 'ar' ? 'active' : ''} onClick={() => setSubTab('ar')}>
-          📷 Ngắm AR (#6)
+          🧭 1 Điểm + Hướng
         </button>
         <button
           type="button"
-          className={subTab === 'project' ? 'active' : ''}
-          onClick={() => setSubTab('project')}
+          className={mode === 'bearing' ? 'active' : ''}
+          onClick={() => setMode('bearing')}
         >
-          🚀 Chiếu 1 Tia
+          📐 2 Góc Giao Hội
+        </button>
+        <button
+          type="button"
+          className={mode === 'circle' ? 'active' : ''}
+          onClick={() => setMode('circle')}
+        >
+          ⭕ 2 Khoảng Cách
+        </button>
+        <button
+          type="button"
+          className={showArDrawer ? 'active' : ''}
+          onClick={() => {
+            if (showArDrawer) {
+              setShowArDrawer(false);
+            } else {
+              openInlineArFor(mode === 'project' ? 'proj' : 'free');
+            }
+          }}
+        >
+          📷 AR
         </button>
       </div>
 
       {noteBanner && <div className="success-box compact-alert">{noteBanner}</div>}
 
-      {subTab === 'triangulation' && (
-        <div className="eng-stack">
-          <div className="chip-row">
+      {/* Inline AR Sighting Drawer (opens right here in 1 tap — zero tab bouncing!) */}
+      {showArDrawer && (
+        <div className="inline-ar-drawer">
+          <div className="clino-actions-row">
             <button
               type="button"
-              className={triMode === 'bearing' ? 'active' : ''}
-              onClick={() => setTriMode('bearing')}
+              className={`secondary-action-btn ${arCamActive ? 'active-pill-btn' : ''}`}
+              onClick={() => (arCamActive ? stopArCamera() : setArCamActive(true))}
             >
-              🔀 Giao 2 Góc Phương Vị
+              {arCamActive ? '⏹️ Tắt Camera' : '📷 Bật Camera'}
             </button>
-            <button
-              type="button"
-              className={triMode === 'circle' ? 'active' : ''}
-              onClick={() => setTriMode('circle')}
-            >
-              ⭕ Giao 2 Bán Kính (Khoảng cách)
+            {onToggleRealSensor && (
+              <button
+                type="button"
+                className={`secondary-action-btn ${useRealSensor ? 'active-pill-btn' : ''}`}
+                onClick={() => onToggleRealSensor(!useRealSensor)}
+              >
+                {useRealSensor ? '🧭 La Bàn Thật: BẬT' : '🎛️ Bật La Bàn Thật'}
+              </button>
+            )}
+            <button type="button" className="secondary-action-btn" onClick={() => setShowArDrawer(false)}>
+              ✕ Đóng AR
             </button>
           </div>
+
+          {arCamError && <div className="error-box">{arCamError}</div>}
+
+          <div className="ar-sight-viewport">
+            {arCamActive && <video ref={videoRef} playsInline muted className="ar-video-bg" />}
+            <div className="ar-hud-overlay">
+              <div className="ar-hud-top-bar">
+                <span>
+                  AZM <strong>{formatBearingCardinal(normHeading)}</strong>
+                </span>
+                <span>
+                  DỐC <strong>{pitchDeg >= 0 ? `+${pitchDeg.toFixed(1)}°` : `${pitchDeg.toFixed(1)}°`}</strong>
+                </span>
+                <span>
+                  ALT <strong>{playerEle}m</strong>
+                </span>
+              </div>
+
+              {arTargetInfo && (
+                <div className="ar-target-callout">
+                  🎯 {lockedTarget?.name}: {arTargetInfo.brng}° (lệch{' '}
+                  {arTargetInfo.delta >= 0 ? `+${arTargetInfo.delta}°` : `${arTargetInfo.delta}°`} •{' '}
+                  {formatDistance(arTargetInfo.dist)})
+                </div>
+              )}
+
+              <svg viewBox="0 0 240 120" className="ar-reticle-svg" aria-hidden="true">
+                <g transform={`translate(120, ${60 + Math.max(-36, Math.min(36, pitchDeg * 1.3))}) rotate(${-rollDeg})`}>
+                  <line x1="-88" y1="0" x2="-22" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
+                  <line x1="22" y1="0" x2="88" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
+                </g>
+                <circle cx="120" cy="60" r="13" fill="none" stroke="rgba(200,162,90,0.88)" strokeWidth="1.3" />
+                <line x1="120" y1="40" x2="120" y2="53" stroke="#e2e8f0" strokeWidth="1.4" />
+                <line x1="120" y1="67" x2="120" y2="80" stroke="#e2e8f0" strokeWidth="1.4" />
+                <line x1="100" y1="60" x2="113" y2="60" stroke="#e2e8f0" strokeWidth="1.4" />
+                <line x1="127" y1="60" x2="140" y2="60" stroke="#e2e8f0" strokeWidth="1.4" />
+                <circle cx="120" cy="60" r="2" fill="#c8a25a" />
+              </svg>
+            </div>
+          </div>
+
+          {arTargetSlot === 'A' || arTargetSlot === 'B' ? (
+            <button
+              type="button"
+              className="primary-action-btn full-w"
+              onClick={() => captureFromAr(arTargetSlot)}
+            >
+              📌 Chốt Góc Ngắm ({normHeading}°) Vào Điểm {arTargetSlot}
+            </button>
+          ) : arTargetSlot === 'proj' ? (
+            <button
+              type="button"
+              className="primary-action-btn full-w"
+              onClick={() => captureFromAr('proj')}
+            >
+              📌 Chốt Hướng {normHeading}° Vào Chiếu 1 Tia
+            </button>
+          ) : (
+            <>
+              <div className="ar-capture-bar">
+                <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('A')}>
+                  📌 Chốt Tia A ({normHeading}°)
+                </button>
+                <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('B')}>
+                  📌 Chốt Tia B ({normHeading}°)
+                </button>
+              </div>
+              <div className="calc-input-row">
+                <input
+                  type="number"
+                  min={1}
+                  value={arEstDistM}
+                  onChange={(e) => setArEstDistM(e.target.value)}
+                  placeholder="Cự ly ước lượng (m)"
+                />
+                <button
+                  type="button"
+                  className="primary-action-btn"
+                  onClick={() =>
+                    onPinTargets([
+                      {
+                        lat: arProjectedCoord.lat,
+                        lon: arProjectedCoord.lon,
+                        label: `Ngắm AR ${arEstD}m ∠${normHeading}°`,
+                        note: `Ngắm AR hướng ${normHeading}°, cự ly ${arEstD}m, ΔH ≈ ${arHeightDeltaM >= 0 ? '+' : ''}${arHeightDeltaM.toFixed(1)}m`
+                      }
+                    ])
+                  }
+                >
+                  🎯 Ghim Điểm Ngắm ({arEstD}m)
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* MODE 1: Single-Ray Projection ("Từ mốc A đi X mét về hướng Y độ") */}
+      {mode === 'project' && (
+        <div className="eng-stack">
+          <div className="tri-mode-explain">
+            Dùng khi đề cho kiểu: <strong>“Từ Chùa Hang Tổ đi 350m hướng 45° Đông Bắc”</strong>.
+          </div>
+          <div className="form-group">
+            <label>1. Chọn điểm xuất phát</label>
+            <select value={projOriginKey} onChange={(e) => setProjOriginKey(e.target.value)}>
+              {renderStationOptions(arSnapA)}
+            </select>
+          </div>
+          {projOriginKey === 'custom' && (
+            <input
+              type="text"
+              value={projCustomInput}
+              onChange={(e) => setProjCustomInput(e.target.value)}
+              placeholder="Nhập tọa độ điểm xuất phát (Lat, Lon hoặc Plus Code)"
+            />
+          )}
+
+          <div className="two-col-inputs">
+            <div className="form-group">
+              <label>2. Hướng đi (0°–359°)</label>
+              <div className="tri-angle-row">
+                <input
+                  type="number"
+                  min={0}
+                  max={360}
+                  value={projAzimuth}
+                  onChange={(e) => setProjAzimuth(e.target.value)}
+                />
+                <button
+                  type="button"
+                  onClick={() => setProjAzimuth(String(normHeading))}
+                  title="Lấy góc la bàn hiện tại"
+                >
+                  🧭
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openInlineArFor('proj')}
+                  title="Mở camera AR ngắm hướng"
+                >
+                  📷
+                </button>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>3. Khoảng cách (mét)</label>
+              <input
+                type="number"
+                min={1}
+                max={25000}
+                value={projDistM}
+                onChange={(e) => setProjDistM(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {projPreview && (
+            <div className="eng-card">
+              <div className="eng-card-head">
+                <strong>🎯 Đích Dự Kiến ({formatBearingCardinal(projPreview.az)})</strong>
+                <span className="eng-result-pill">
+                  Cao {projPreview.destEle}m ({projPreview.eleDiff >= 0 ? `+${projPreview.eleDiff}m` : `${projPreview.eleDiff}m`})
+                </span>
+              </div>
+              <div className="eng-stat-line">
+                Tọa độ WGS84: <strong>{projPreview.lat.toFixed(6)}, {projPreview.lon.toFixed(6)}</strong>
+              </div>
+              <button
+                type="button"
+                className="primary-action-btn full-w"
+                onClick={() =>
+                  onPinTargets([
+                    {
+                      lat: projPreview.lat,
+                      lon: projPreview.lon,
+                      label: `Đích ${Math.round(projPreview.dist)}m ∠${Math.round(projPreview.az)}°`,
+                      note: `Chiếu từ "${projOrigin.label}": đi ${projPreview.dist}m hướng ${Math.round(projPreview.az)}°`
+                    }
+                  ])
+                }
+              >
+                🎯 Ghim &amp; Khóa Radar Tới Đích Này
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* MODE 2 & 3: Two-Bearing Triangulation (Forward/Resection) or Two-Circle Trilateration */}
+      {(mode === 'bearing' || mode === 'circle') && (
+        <div className="eng-stack">
+          {mode === 'bearing' && (
+            <>
+              <div className="chip-row">
+                <button
+                  type="button"
+                  className={bearingSubMode === 'forward' ? 'active' : ''}
+                  onClick={() => handleSwitchBearingSubMode('forward')}
+                >
+                  🎯 Tìm Đích X (Ngắm từ 2 nơi)
+                </button>
+                <button
+                  type="button"
+                  className={bearingSubMode === 'resection' ? 'active' : ''}
+                  onClick={() => handleSwitchBearingSubMode('resection')}
+                >
+                  📍 Tìm Vị Trí TÔI (Ngắm 2 đỉnh núi)
+                </button>
+              </div>
+              <div className="tri-mode-explain">
+                {bearingSubMode === 'forward'
+                  ? 'Đứng ở A ngắm tới đích X, sang B ngắm tới X → tìm tọa độ X.'
+                  : 'Đứng 1 chỗ ngắm về 2 mốc A & B đã biết → app tự đảo ngược 180° để tìm đúng vị trí bạn đang đứng!'}
+              </div>
+            </>
+          )}
 
           <div className="two-col-inputs">
             {/* Station A */}
             <div className="tri-station-card">
               <div className="eng-card-head">
-                <strong>🚩 Điểm gốc A</strong>
+                <strong>🚩 Mốc A</strong>
+                {mode === 'bearing' && (
+                  <button
+                    type="button"
+                    className="ota-mini-link"
+                    onClick={() => openInlineArFor('A')}
+                  >
+                    📷 Ngắm AR
+                  </button>
+                )}
               </div>
               <select value={stationAKey} onChange={(e) => setStationAKey(e.target.value)}>
                 {renderStationOptions(arSnapA)}
@@ -466,9 +839,11 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                   placeholder="Lat, Lon hoặc Plus Code"
                 />
               )}
-              {triMode === 'bearing' ? (
+              {mode === 'bearing' ? (
                 <>
-                  <label className="tri-lbl">Góc ngắm từ A (0°–359°)</label>
+                  <label className="tri-lbl">
+                    {bearingSubMode === 'resection' ? 'Góc bạn ngắm thấy A' : 'Góc từ A ngắm đích'}
+                  </label>
                   <div className="tri-angle-row">
                     <input
                       type="number"
@@ -480,27 +855,18 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        setStationAKey('current');
+                        if (bearingSubMode === 'forward') setStationAKey('current');
                         setBearingA(String(normHeading));
                       }}
-                      title="Lấy vị trí & hướng la bàn hiện tại vào Tia A"
+                      title="Chốt góc la bàn hiện tại vào A"
                     >
                       🧭
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setBearingA(String(((Math.round(parseFloat(bearingA) || 0) + 180) % 360 + 360) % 360))
-                      }
-                      title="Đảo ngược tia 180° (Back-bearing)"
-                    >
-                      180°
                     </button>
                   </div>
                 </>
               ) : (
                 <>
-                  <label className="tri-lbl">Bán kính R_A (mét)</label>
+                  <label className="tri-lbl">Cách A bao nhiêu mét?</label>
                   <input
                     type="number"
                     min={1}
@@ -515,7 +881,16 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
             {/* Station B */}
             <div className="tri-station-card">
               <div className="eng-card-head">
-                <strong>🚩 Điểm gốc B</strong>
+                <strong>🚩 Mốc B</strong>
+                {mode === 'bearing' && (
+                  <button
+                    type="button"
+                    className="ota-mini-link"
+                    onClick={() => openInlineArFor('B')}
+                  >
+                    📷 Ngắm AR
+                  </button>
+                )}
               </div>
               <select value={stationBKey} onChange={(e) => setStationBKey(e.target.value)}>
                 {renderStationOptions(arSnapB)}
@@ -528,9 +903,11 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                   placeholder="Lat, Lon hoặc Plus Code"
                 />
               )}
-              {triMode === 'bearing' ? (
+              {mode === 'bearing' ? (
                 <>
-                  <label className="tri-lbl">Góc ngắm từ B (0°–359°)</label>
+                  <label className="tri-lbl">
+                    {bearingSubMode === 'resection' ? 'Góc bạn ngắm thấy B' : 'Góc từ B ngắm đích'}
+                  </label>
                   <div className="tri-angle-row">
                     <input
                       type="number"
@@ -542,27 +919,18 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                     <button
                       type="button"
                       onClick={() => {
-                        setStationBKey('current');
+                        if (bearingSubMode === 'forward') setStationBKey('current');
                         setBearingB(String(normHeading));
                       }}
-                      title="Lấy vị trí & hướng la bàn hiện tại vào Tia B"
+                      title="Chốt góc la bàn hiện tại vào B"
                     >
                       🧭
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setBearingB(String(((Math.round(parseFloat(bearingB) || 0) + 180) % 360 + 360) % 360))
-                      }
-                      title="Đảo ngược tia 180° (Back-bearing)"
-                    >
-                      180°
                     </button>
                   </div>
                 </>
               ) : (
                 <>
-                  <label className="tri-lbl">Bán kính R_B (mét)</label>
+                  <label className="tri-lbl">Cách B bao nhiêu mét?</label>
                   <input
                     type="number"
                     min={1}
@@ -591,7 +959,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                 stroke="rgba(148,163,184,0.35)"
                 strokeDasharray="3,3"
               />
-              {triMode === 'bearing' ? (
+              {mode === 'bearing' ? (
                 <>
                   <line
                     x1={svgDiagram.pA.sx}
@@ -613,29 +981,15 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                     <g>
                       <circle cx={svgDiagram.pHit.sx} cy={svgDiagram.pHit.sy} r="5.5" fill="#c26d68" stroke="#fff" strokeWidth="1.5" />
                       <text x={svgDiagram.pHit.sx + 7} y={svgDiagram.pHit.sy - 4} fill="#fef08a" fontSize="10" fontWeight="bold">
-                        X
+                        {bearingSubMode === 'resection' ? 'TÔI' : 'X'}
                       </text>
                     </g>
                   )}
                 </>
               ) : (
                 <>
-                  <circle
-                    cx={svgDiagram.pA.sx}
-                    cy={svgDiagram.pA.sy}
-                    r={Math.max(2, svgDiagram.r1Px)}
-                    fill="none"
-                    stroke="#38BDF8"
-                    strokeWidth="1.6"
-                  />
-                  <circle
-                    cx={svgDiagram.pB.sx}
-                    cy={svgDiagram.pB.sy}
-                    r={Math.max(2, svgDiagram.r2Px)}
-                    fill="none"
-                    stroke="#d49b54"
-                    strokeWidth="1.6"
-                  />
+                  <circle cx={svgDiagram.pA.sx} cy={svgDiagram.pA.sy} r={Math.max(2, svgDiagram.r1Px)} fill="none" stroke="#38BDF8" strokeWidth="1.6" />
+                  <circle cx={svgDiagram.pB.sx} cy={svgDiagram.pB.sy} r={Math.max(2, svgDiagram.r2Px)} fill="none" stroke="#d49b54" strokeWidth="1.6" />
                   {svgDiagram.pC1 && (
                     <g>
                       <circle cx={svgDiagram.pC1.sx} cy={svgDiagram.pC1.sy} r="4.5" fill="#4ade80" stroke="#fff" strokeWidth="1.2" />
@@ -666,34 +1020,35 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
           </div>
 
           {/* Results */}
-          {triMode === 'bearing' && bearingResult && (
+          {mode === 'bearing' && bearingResult && (
             <div className="eng-card">
               {bearingResult.status === 'parallel' || bearingResult.lat === null || bearingResult.lon === null ? (
                 <div className="error-box">
-                  Hai tia song song hoặc 2 điểm gốc trùng nhau (góc kẹp {bearingResult.crossAngleDeg}°). Hãy đổi góc ngắm khác nhau hoặc di chuyển xa điểm A hơn!
+                  2 tia song song hoặc 2 mốc trùng nhau (góc kẹp {bearingResult.crossAngleDeg}°). Chọn 2 mốc khác nhau hoặc góc ngắm lệch rõ hơn!
                 </div>
               ) : (
                 <>
                   <div className="eng-card-head">
                     <strong>
                       {bearingResult.status === 'ok'
-                        ? '🎯 Giao Điểm 2 Tia (X)'
-                        : '⚠️ Hai tia phân kỳ (giao phía sau góc ngắm)'}
+                        ? bearingSubMode === 'resection'
+                          ? '📍 Vị Trí Của Bạn (Giao Hội Nghịch)'
+                          : '🎯 Giao Điểm 2 Tia (X)'
+                        : '⚠️ Hai tia cắt ngược phía sau (kiểm tra lại góc ngắm)'}
                     </strong>
                     <span className="eng-result-pill">
-                      Góc cắt {bearingResult.crossAngleDeg}° • Cao {bearingResult.ele}m
+                      Góc cắt {bearingResult.crossAngleDeg}° • {bearingResult.ele}m
                     </span>
                   </div>
                   <div className="eng-stat-line">
                     Tọa độ: <strong>{bearingResult.lat.toFixed(6)}, {bearingResult.lon.toFixed(6)}</strong>
                     <br />
-                    Từ A: <strong>{formatDistance(Math.abs(bearingResult.dist1M))}</strong> • Từ B:{' '}
-                    <strong>{formatDistance(Math.abs(bearingResult.dist2M))}</strong> • Đáy AB:{' '}
-                    {formatDistance(bearingResult.baselineM)}
+                    Cách A: <strong>{formatDistance(Math.abs(bearingResult.dist1M))}</strong> • Cách B:{' '}
+                    <strong>{formatDistance(Math.abs(bearingResult.dist2M))}</strong>
                   </div>
                   {bearingResult.crossAngleDeg < 15 && (
                     <span className="knot-warn">
-                      ⚠️ Góc cắt nhỏ (&lt;15°) dễ sai số vị trí; góc lý tưởng nhất là 45°–135°.
+                      ⚠️ Góc cắt nhỏ (&lt;15°) dễ sai số; góc lý tưởng nhất là 45°–135°.
                     </span>
                   )}
                   <button
@@ -704,29 +1059,32 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                         {
                           lat: bearingResult.lat!,
                           lon: bearingResult.lon!,
-                          label: `Giao Hội (${bearingA}°×${bearingB}°)`,
-                          note: `Giao hội từ ${stationA.label} (${bearingA}°) và ${stationB.label} (${bearingB}°) • Góc cắt ${bearingResult.crossAngleDeg}°`
+                          label:
+                            bearingSubMode === 'resection'
+                              ? `Vị trí Giao Hội (${bearingA}°×${bearingB}°)`
+                              : `Giao Hội (${bearingA}°×${bearingB}°)`,
+                          note: `${bearingSubMode === 'resection' ? 'Nghịch (tự +180°)' : 'Thuận'} từ ${stationA.label} (${bearingA}°) & ${stationB.label} (${bearingB}°) • Góc cắt ${bearingResult.crossAngleDeg}°`
                         }
                       ])
                     }
                   >
-                    🎯 Ghim &amp; Khóa Radar Tới Điểm Giao Hội
+                    🎯 Ghim &amp; Khóa Radar Tới Giao Điểm
                   </button>
                 </>
               )}
             </div>
           )}
 
-          {triMode === 'circle' && circleResult && (
+          {mode === 'circle' && circleResult && (
             <div className="eng-card">
               {circleResult.status === 'concentric' ? (
-                <div className="error-box">Hai điểm gốc A và B trùng tọa độ nhau!</div>
+                <div className="error-box">Hai mốc A và B trùng tọa độ nhau!</div>
               ) : circleResult.status !== 'ok' ? (
                 <>
                   <div className="error-box">
                     {circleResult.status === 'too_far'
-                      ? `2 vòng tròn KHÔNG chạm nhau (Khoảng cách A–B là ${Math.round(circleResult.baselineM)}m > tổng R_A + R_B).`
-                      : `Vòng tròn nhỏ nằm lọt bên trong vòng lớn (A–B là ${Math.round(circleResult.baselineM)}m < |R_A − R_B|).`}
+                      ? `2 vòng tròn KHÔNG cắt nhau (A–B dài ${Math.round(circleResult.baselineM)}m > tổng R_A + R_B).`
+                      : `Vòng tròn nhỏ nằm lọt trong vòng lớn (A–B dài ${Math.round(circleResult.baselineM)}m < |R_A − R_B|).`}
                   </div>
                   {circleResult.approx && (
                     <button
@@ -738,27 +1096,25 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                             lat: circleResult.approx!.lat,
                             lon: circleResult.approx!.lon,
                             label: 'Điểm gần đúng AB',
-                            note: `Điểm nội suy gần nhất giữa ${stationA.label} và ${stationB.label}`
+                            note: `Nội suy gần nhất giữa ${stationA.label} và ${stationB.label}`
                           }
                         ])
                       }
                     >
-                      📍 Ghim Điểm Gần Nhất Trên Đoạn AB ({circleResult.approx.lat.toFixed(5)}, {circleResult.approx.lon.toFixed(5)})
+                      📍 Ghim Điểm Gần Nhất ({circleResult.approx.lat.toFixed(5)}, {circleResult.approx.lon.toFixed(5)})
                     </button>
                   )}
                 </>
               ) : (
                 <>
                   <div className="eng-card-head">
-                    <strong>⭕ Có 2 Giao Điểm Khả Dĩ (P1 &amp; P2)</strong>
+                    <strong>⭕ 2 Giao Điểm Khả Dĩ (P1 &amp; P2)</strong>
                     <span className="eng-result-pill">A–B: {formatDistance(circleResult.baselineM)}</span>
                   </div>
                   <div className="eng-stat-line">
-                    <strong>P1:</strong> {circleResult.p1!.lat.toFixed(6)}, {circleResult.p1!.lon.toFixed(6)} (Cao{' '}
-                    {circleResult.e1}m)
+                    <strong>P1:</strong> {circleResult.p1!.lat.toFixed(6)}, {circleResult.p1!.lon.toFixed(6)} ({circleResult.e1}m)
                     <br />
-                    <strong>P2:</strong> {circleResult.p2!.lat.toFixed(6)}, {circleResult.p2!.lon.toFixed(6)} (Cao{' '}
-                    {circleResult.e2}m)
+                    <strong>P2:</strong> {circleResult.p2!.lat.toFixed(6)}, {circleResult.p2!.lon.toFixed(6)} ({circleResult.e2}m)
                   </div>
                   <div className="clino-actions-row">
                     <button
@@ -770,7 +1126,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                             lat: circleResult.p1!.lat,
                             lon: circleResult.p1!.lon,
                             label: `Giao P1 (${radiusA}m/${radiusB}m)`,
-                            note: `Giao điểm 1 từ ${stationA.label} (${radiusA}m) & ${stationB.label} (${radiusB}m)`
+                            note: `Từ ${stationA.label} (${radiusA}m) & ${stationB.label} (${radiusB}m)`
                           }
                         ])
                       }
@@ -786,7 +1142,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                             lat: circleResult.p2!.lat,
                             lon: circleResult.p2!.lon,
                             label: `Giao P2 (${radiusA}m/${radiusB}m)`,
-                            note: `Giao điểm 2 từ ${stationA.label} (${radiusA}m) & ${stationB.label} (${radiusB}m)`
+                            note: `Từ ${stationA.label} (${radiusA}m) & ${stationB.label} (${radiusB}m)`
                           }
                         ])
                       }
@@ -815,226 +1171,13 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
                         ])
                       }
                     >
-                      📍 Ghim Cả P1 &amp; P2 Lên 3D
+                      📍 Ghim Cả 2
                     </button>
                   </div>
                 </>
               )}
             </div>
           )}
-        </div>
-      )}
-
-      {subTab === 'ar' && (
-        <div className="eng-stack">
-          <div className="clino-actions-row">
-            <button
-              type="button"
-              className={`secondary-action-btn ${arCamActive ? 'active-pill-btn' : ''}`}
-              onClick={() => (arCamActive ? stopArCamera() : setArCamActive(true))}
-            >
-              {arCamActive ? '⏹️ Tắt Camera' : '📷 Bật Camera Ngắm AR'}
-            </button>
-            {onToggleRealSensor && (
-              <button
-                type="button"
-                className={`secondary-action-btn ${useRealSensor ? 'active-pill-btn' : ''}`}
-                onClick={() => onToggleRealSensor(!useRealSensor)}
-              >
-                {useRealSensor ? '🧭 Cảm Biến Thật: BẬT' : '🎛️ Bật Cảm Biến La Bàn'}
-              </button>
-            )}
-          </div>
-
-          {arCamError && <div className="error-box">{arCamError}</div>}
-
-          {/* Optical AR Sighting HUD Viewport */}
-          <div className="ar-sight-viewport">
-            {arCamActive && <video ref={videoRef} playsInline muted className="ar-video-bg" />}
-
-            <div className="ar-hud-overlay">
-              {/* Top Heading Ribbon */}
-              <div className="ar-hud-top-bar">
-                <span>AZM <strong>{formatBearingCardinal(normHeading)}</strong></span>
-                <span>PITCH <strong>{pitchDeg >= 0 ? `+${pitchDeg.toFixed(1)}°` : `${pitchDeg.toFixed(1)}°`}</strong></span>
-                <span>ALT <strong>{playerEle}m</strong></span>
-              </div>
-
-              {/* Target Alignment Tag */}
-              {arTargetInfo && (
-                <div className="ar-target-callout">
-                  🎯 {lockedTarget?.name}: hướng <strong>{arTargetInfo.brng}°</strong> (lệch{' '}
-                  {arTargetInfo.delta >= 0 ? `+${arTargetInfo.delta}°` : `${arTargetInfo.delta}°`} •{' '}
-                  {formatDistance(arTargetInfo.dist)})
-                </div>
-              )}
-
-              {/* Artificial Horizon + Pitch Ladder + Crosshair */}
-              <svg viewBox="0 0 240 140" className="ar-reticle-svg" aria-hidden="true">
-                <g
-                  transform={`translate(120, ${70 + Math.max(-42, Math.min(42, pitchDeg * 1.4))}) rotate(${-rollDeg})`}
-                >
-                  <line x1="-90" y1="0" x2="-24" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
-                  <line x1="24" y1="0" x2="90" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
-                  <line x1="-42" y1="-22" x2="-18" y2="-22" stroke="rgba(148,163,184,0.45)" strokeWidth="1" strokeDasharray="3,2" />
-                  <line x1="18" y1="-22" x2="42" y2="-22" stroke="rgba(148,163,184,0.45)" strokeWidth="1" strokeDasharray="3,2" />
-                  <line x1="-42" y1="22" x2="-18" y2="22" stroke="rgba(148,163,184,0.45)" strokeWidth="1" strokeDasharray="3,2" />
-                  <line x1="18" y1="22" x2="42" y2="22" stroke="rgba(148,163,184,0.45)" strokeWidth="1" strokeDasharray="3,2" />
-                </g>
-                {/* Fixed Center Mil Reticle */}
-                <circle cx="120" cy="70" r="14" fill="none" stroke="rgba(200,162,90,0.85)" strokeWidth="1.2" />
-                <line x1="120" y1="48" x2="120" y2="62" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="120" y1="78" x2="120" y2="92" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="98" y1="70" x2="112" y2="70" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="128" y1="70" x2="142" y2="70" stroke="#e2e8f0" strokeWidth="1.4" />
-                <circle cx="120" cy="70" r="2" fill="#c8a25a" />
-              </svg>
-
-              <div className="ar-hud-bottom-bar">
-                <span>NGHIÊNG ROLL {rollDeg.toFixed(1)}°</span>
-                <span>ĐỘ DỐC {Math.abs(pitchDeg) < 89 ? `${(Math.tan((pitchDeg * Math.PI) / 180) * 100).toFixed(0)}%` : '∞'}</span>
-              </div>
-            </div>
-          </div>
-
-          {/* Push Captured AR Sight Rays directly into Triangulation */}
-          <div className="ar-capture-bar">
-            <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('A')}>
-              📌 Chốt vào Tia A ({normHeading}°)
-            </button>
-            <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('B')}>
-              📌 Chốt vào Tia B ({normHeading}°)
-            </button>
-          </div>
-
-          {(arSnapA || arSnapB) && (
-            <div className="eng-stat-line">
-              {arSnapA && <span>Tia A: <strong>{arSnapA.heading}°</strong> • </span>}
-              {arSnapB && <span>Tia B: <strong>{arSnapB.heading}°</strong> • </span>}
-              <button
-                type="button"
-                className="mini-toggle-btn active"
-                onClick={() => {
-                  setTriMode('bearing');
-                  setSubTab('triangulation');
-                }}
-              >
-                📐 Mở Giao Hội ngay →
-              </button>
-            </div>
-          )}
-
-          {/* Quick Range-Elevation Pinning from AR Sight */}
-          <div className="eng-card">
-            <div className="eng-card-head">
-              <strong>📏 Phóng Chiếu &amp; Tính Cao Độ Theo Tâm Ngắm AR</strong>
-            </div>
-            <div className="calc-input-row">
-              <input
-                type="number"
-                min={1}
-                value={arEstDistM}
-                onChange={(e) => setArEstDistM(e.target.value)}
-                placeholder="Ước lượng cự ly (m)"
-              />
-              <button
-                type="button"
-                className="primary-action-btn"
-                onClick={() =>
-                  onPinTargets([
-                    {
-                      lat: arProjectedCoord.lat,
-                      lon: arProjectedCoord.lon,
-                      label: `Ngắm AR ${arEstD}m ∠${normHeading}°`,
-                      note: `Ngắm từ (${playerLat.toFixed(5)}, ${playerLon.toFixed(5)}) góc ${normHeading}°, cao ${arHeightDeltaM >= 0 ? '+' : ''}${arHeightDeltaM.toFixed(1)}m`
-                    }
-                  ])
-                }
-              >
-                🎯 Ghim Điểm Ngắm 3D
-              </button>
-            </div>
-            <span className="mono-sub">
-              Điểm phóng chiếu: {arProjectedCoord.lat.toFixed(5)}, {arProjectedCoord.lon.toFixed(5)} • Chênh cao ước tính ΔH ≈{' '}
-              <strong>{arHeightDeltaM >= 0 ? `+${arHeightDeltaM.toFixed(1)}` : arHeightDeltaM.toFixed(1)} m</strong>
-            </span>
-          </div>
-        </div>
-      )}
-
-      {subTab === 'project' && (
-        <div className="eng-stack">
-          <p className="helper-note">
-            Dành cho đề mật thư kiểu trinh sát: <em>"Từ Chùa Hang Tổ đi 350m về hướng 45° Đông Bắc"</em>:
-          </p>
-          <div className="form-group">
-            <label>Điểm gốc xuất phát</label>
-            <select value={projOriginKey} onChange={(e) => setProjOriginKey(e.target.value)}>
-              {renderStationOptions(arSnapA)}
-            </select>
-          </div>
-          {projOriginKey === 'custom' && (
-            <input
-              type="text"
-              value={projCustomInput}
-              onChange={(e) => setProjCustomInput(e.target.value)}
-              placeholder="Nhập tọa độ điểm xuất phát (Lat, Lon hoặc Plus Code)"
-            />
-          )}
-          <div className="two-col-inputs">
-            <div className="form-group">
-              <label>Góc phương vị (0°–359°)</label>
-              <div className="tri-angle-row">
-                <input
-                  type="number"
-                  min={0}
-                  max={360}
-                  value={projAzimuth}
-                  onChange={(e) => setProjAzimuth(e.target.value)}
-                />
-                <button
-                  type="button"
-                  onClick={() => setProjAzimuth(String(normHeading))}
-                  title="Lấy góc la bàn hiện tại"
-                >
-                  🧭
-                </button>
-              </div>
-            </div>
-            <div className="form-group">
-              <label>Khoảng cách (mét)</label>
-              <input
-                type="number"
-                min={1}
-                max={25000}
-                value={projDistM}
-                onChange={(e) => setProjDistM(e.target.value)}
-              />
-            </div>
-          </div>
-          <button
-            type="button"
-            className="primary-action-btn full-w"
-            onClick={() => {
-              if (!projOrigin.valid) {
-                notify('⚠️ Tọa độ điểm xuất phát chưa hợp lệ!');
-                return;
-              }
-              const az = parseFloat(projAzimuth) || 0;
-              const dist = Math.max(1, parseFloat(projDistM) || 100);
-              const dest = projectPointByBearing(projOrigin.lat, projOrigin.lon, az, dist);
-              onPinTargets([
-                {
-                  lat: dest.lat,
-                  lon: dest.lon,
-                  label: `Đích ${Math.round(dist)}m ∠${Math.round(az)}°`,
-                  note: `Chiếu từ "${projOrigin.label}": đi ${dist}m hướng ${az}°`
-                }
-              ]);
-            }}
-          >
-            🚀 Phóng Chiếu Tọa Độ &amp; Khóa Radar
-          </button>
         </div>
       )}
     </div>

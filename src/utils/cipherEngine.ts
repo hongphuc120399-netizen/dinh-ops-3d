@@ -113,6 +113,29 @@ const TACTICAL_HINT_WORDS = [
   'TIM',
   'DUONG',
   'NGUOC',
+  'LA',
+  'BAN',
+  'BAO',
+  'QUAN',
+  'TIEN',
+  'XANH',
+  'HO',
+  'TO',
+  'PHUONG',
+  'MAI',
+  'HUONG',
+  'DI',
+  'DEN',
+  'TOI',
+  'RE',
+  'TRAI',
+  'PHAI',
+  'THANG',
+  'DOC',
+  'CAU',
+  'MON',
+  'MOC',
+  'GOC',
   'CHECK',
   'POINT',
   'NORTH',
@@ -178,7 +201,7 @@ export function reverseText(text: string): { full: string; words: string } {
   return { full, words };
 }
 
-function scorePlaintextLikelihood(text: string): { score: number; coord: DetectedCoord | null } {
+export function scorePlaintextLikelihood(text: string): { score: number; coord: DetectedCoord | null } {
   const coord = detectCoordinateInText(text);
   const upper = text.toUpperCase();
   const tokens = upper.split(/[^A-Z0-9]+/).filter(Boolean);
