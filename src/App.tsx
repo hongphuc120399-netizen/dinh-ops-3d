@@ -132,7 +132,11 @@ export const App: React.FC = () => {
     return saved && ['tactical', 'topo', 'satellite', 'night'].includes(saved) ? saved : 'tactical';
   });
   const [cameraMode, setCameraMode] = useState<Camera3DMode>('orbit');
-  const [verticalScale, setVerticalScale] = useState<number>(1.55);
+  const [verticalScale, setVerticalScale] = useState<number>(() => {
+    if (typeof window === 'undefined') return 1.45;
+    const saved = Number(localStorage.getItem('dinh_3d_vscale_v1'));
+    return Number.isFinite(saved) && saved >= 0.8 && saved <= 2.5 ? saved : 1.45;
+  });
   const [map2DStyle, setMap2DStyle] = useState<Map2DStyle>(() => {
     if (typeof window === 'undefined') return 'google-hybrid';
     const saved = localStorage.getItem('dinh_2d_style_v1') as Map2DStyle | null;
@@ -496,6 +500,14 @@ export const App: React.FC = () => {
       // Ignore storage warnings
     }
   }, [map2DStyle]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('dinh_3d_vscale_v1', String(verticalScale));
+    } catch {
+      // Ignore storage warnings
+    }
+  }, [verticalScale]);
 
   // 2. Screen WakeLock for Continuous Trail Tracking
   useEffect(() => {
@@ -1682,7 +1694,9 @@ export const App: React.FC = () => {
           </div>
 
           <div className="pop-section">
-            <span className="pop-label">Góc Camera 3D & Độ nổi khối núi ({verticalScale.toFixed(1)}x)</span>
+            <span className="pop-label">
+              Góc Camera 3D &amp; Tỷ lệ Độ cao ({verticalScale === 1 ? '1:1 Thực' : `${verticalScale.toFixed(2).replace(/0$/, '')}x`})
+            </span>
             <div className="chip-row">
               <button
                 type="button"
@@ -1700,9 +1714,9 @@ export const App: React.FC = () => {
               </button>
               <button
                 type="button"
-                onClick={() => setVerticalScale((v) => (v < 1.3 ? 1.55 : v < 1.9 ? 2.15 : 1.05))}
+                onClick={() => setVerticalScale((v) => (v < 1.2 ? 1.45 : v < 1.8 ? 2.0 : 1.0))}
               >
-                ⛰️ Độ nổi {verticalScale.toFixed(1)}x
+                {verticalScale === 1 ? '📐 Tỷ lệ 1:1 Thực' : `⛰️ Độ nổi ${verticalScale.toFixed(2).replace(/\.?0+$/, '')}x`}
               </button>
               <button
                 type="button"

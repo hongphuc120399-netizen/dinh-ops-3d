@@ -21,6 +21,8 @@ import {
   getWorldDimensions,
   haversineDistanceM,
   latLonToWorld3D,
+  METERS_PER_DEG_LAT,
+  METERS_PER_DEG_LON,
   projectPointByBearing,
   sampleDemElevation,
   sampleDemSlopeDeg,
@@ -296,6 +298,184 @@ function createCardinalSprite(label: string, color: string): {
   return { sprite, tex, mat };
 }
 
+/**
+ * Build a watertight 4-wall geological skirt + base cap welded directly to every
+ * perimeter vertex of terrainGeo so the 3D mountain block never floats with hollow sides.
+ */
+function buildTerrainSkirtGeometry(
+  terrainGeo: THREE.PlaneGeometry,
+  cols: number,
+  rows: number,
+  baseY = -110
+): THREE.BufferGeometry {
+  const terrainPos = terrainGeo.attributes.position;
+  const positions: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+  // Track mapping from skirt vertex index -> source terrain vertex index for dynamic verticalScale updates
+  const topBindings: [number, number][] = [];
+
+  const topCol = new THREE.Color('#223041');
+  const botCol = new THREE.Color('#090d14');
+
+  const pushWall = (edgeIndices: number[], flipWinding: boolean) => {
+    const startVert = positions.length / 3;
+    for (let i = 0; i < edgeIndices.length; i++) {
+      const tIdx = edgeIndices[i];
+      const tx = terrainPos.getX(tIdx);
+      const ty = terrainPos.getY(tIdx);
+      const tz = terrainPos.getZ(tIdx);
+      const topVertIdx = startVert + i * 2;
+      positions.push(tx, ty, tz);
+      colors.push(topCol.r, topCol.g, topCol.b);
+      topBindings.push([topVertIdx, tIdx]);
+
+      positions.push(tx, baseY, tz);
+      colors.push(botCol.r, botCol.g, botCol.b);
+    }
+    for (let i = 0; i < edgeIndices.length - 1; i++) {
+      const a = startVert + i * 2;
+      const b = a + 2;
+      const c = a + 1;
+      const d = a + 3;
+      if (flipWinding) {
+        indices.push(a, c, b, b, c, d);
+      } else {
+        indices.push(a, b, c, b, d, c);
+      }
+    }
+  };
+
+  // North edge (r = 0, c = 0..cols-1) -> outward normal -Z
+  const northEdge: number[] = [];
+  for (let c = 0; c < cols; c++) northEdge.push(c);
+  pushWall(northEdge, false);
+
+  // South edge (r = rows - 1, c = 0..cols-1) -> outward normal +Z
+  const southEdge: number[] = [];
+  for (let c = 0; c < cols; c++) southEdge.push((rows - 1) * cols + c);
+  pushWall(southEdge, true);
+
+  // West edge (c = 0, r = 0..rows-1) -> outward normal -X
+  const westEdge: number[] = [];
+  for (let r = 0; r < rows; r++) westEdge.push(r * cols);
+  pushWall(westEdge, true);
+
+  // East edge (c = cols - 1, r = 0..rows-1) -> outward normal +X
+  const eastEdge: number[] = [];
+  for (let r = 0; r < rows; r++) eastEdge.push(r * cols + (cols - 1));
+  pushWall(eastEdge, false);
+
+  // Solid bottom plate at y = baseY sealing the underside of the diorama block
+  const nwIdx = 0;
+  const neIdx = cols - 1;
+  const swIdx = (rows - 1) * cols;
+  const seIdx = rows * cols - 1;
+  const capStart = positions.length / 3;
+  for (const cornerIdx of [nwIdx, neIdx, swIdx, seIdx]) {
+    positions.push(terrainPos.getX(cornerIdx), baseY, terrainPos.getZ(cornerIdx));
+    colors.push(botCol.r, botCol.g, botCol.b);
+  }
+  indices.push(capStart, capStart + 2, capStart + 1, capStart + 1, capStart + 2, capStart + 3);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  geo.userData.topBindings = topBindings;
+  return geo;
+}
+
+function updateTerrainSkirtY(skirtGeo: THREE.BufferGeometry, terrainGeo: THREE.PlaneGeometry): void {
+  const bindings = skirtGeo.userData.topBindings as [number, number][] | undefined;
+  if (!bindings) return;
+  const skirtPos = skirtGeo.attributes.position;
+  const terrainPos = terrainGeo.attributes.position;
+  for (let i = 0; i < bindings.length; i++) {
+    const [skirtVertIdx, terrainVertIdx] = bindings[i];
+    skirtPos.setY(skirtVertIdx, terrainPos.getY(terrainVertIdx));
+  }
+  skirtPos.needsUpdate = true;
+  skirtGeo.computeVertexNormals();
+  skirtGeo.computeBoundingBox();
+  skirtGeo.computeBoundingSphere();
+}
+
+/**
+ * Create a terrain-conforming 3D annulus ring whose inner & outer rims sample exact DEM elevation
+ * so summit, hazard, junction, and pin rings hug steep mountain slopes with 0% burial and 0% floating.
+ */
+function createDrapedRingGeometry(
+  centerLat: number,
+  centerLon: number,
+  innerR: number,
+  outerR: number,
+  liftM: number,
+  segments: number,
+  dataset: NuiDinhDataset,
+  verticalScale: number,
+  centeredAtLocalOrigin = false
+): THREE.BufferGeometry {
+  const centerEle = sampleDemElevation(dataset.dem, dataset.bounds, centerLat, centerLon);
+  const [cx, cy, cz] = latLonToWorld3D(centerLat, centerLon, centerEle, dataset.bounds, verticalScale);
+  const positions: number[] = [];
+  const indices: number[] = [];
+
+  for (let s = 0; s <= segments; s++) {
+    const a = (s / segments) * Math.PI * 2;
+    const cosA = Math.cos(a);
+    const sinA = Math.sin(a);
+    for (const rad of [innerR, outerR]) {
+      const wx = cx + cosA * rad;
+      const wz = cz + sinA * rad;
+      const ll = world3DToLatLon(wx, wz, dataset.bounds);
+      const wy = sampleDemElevation(dataset.dem, dataset.bounds, ll.lat, ll.lon) * verticalScale + liftM;
+      if (centeredAtLocalOrigin) {
+        positions.push(wx - cx, wy - cy, wz - cz);
+      } else {
+        positions.push(wx, wy, wz);
+      }
+    }
+  }
+
+  for (let s = 0; s < segments; s++) {
+    const a = s * 2;
+    const b = a + 1;
+    const c = a + 2;
+    const d = a + 3;
+    indices.push(a, c, b, b, c, d);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  return geo;
+}
+
+function sampleTerrainNormal3D(
+  wx: number,
+  wz: number,
+  dataset: NuiDinhDataset,
+  verticalScale: number,
+  outNormal: THREE.Vector3
+): THREE.Vector3 {
+  const stepM = 14;
+  const llE = world3DToLatLon(wx + stepM, wz, dataset.bounds);
+  const llW = world3DToLatLon(wx - stepM, wz, dataset.bounds);
+  const llS = world3DToLatLon(wx, wz + stepM, dataset.bounds);
+  const llN = world3DToLatLon(wx, wz - stepM, dataset.bounds);
+  const yE = sampleDemElevation(dataset.dem, dataset.bounds, llE.lat, llE.lon) * verticalScale;
+  const yW = sampleDemElevation(dataset.dem, dataset.bounds, llW.lat, llW.lon) * verticalScale;
+  const yS = sampleDemElevation(dataset.dem, dataset.bounds, llS.lat, llS.lon) * verticalScale;
+  const yN = sampleDemElevation(dataset.dem, dataset.bounds, llN.lat, llN.lon) * verticalScale;
+  const dydx = (yE - yW) / (2 * stepM);
+  const dydz = (yS - yN) / (2 * stepM);
+  return outNormal.set(-dydx, 1, -dydz).normalize();
+}
+
 function buildProceduralTerrainCanvas(
   dataset: NuiDinhDataset,
   mode: 'tactical' | 'topo' | 'night',
@@ -319,24 +499,29 @@ function buildProceduralTerrainCanvas(
   const sunY = 0.52;
   const sunZ = 0.68;
 
+  const stepDeg = 0.00022;
+  const dxMeters = 2 * stepDeg * METERS_PER_DEG_LON;
+  const dyMeters = 2 * stepDeg * METERS_PER_DEG_LAT;
+
   for (let y = 0; y < H; y++) {
-    const v = y / (H - 1);
+    const v = (y + 0.5) / H;
     const lat = bounds.north - v * dLat;
     for (let x = 0; x < W; x++) {
-      const u = x / (W - 1);
+      const u = (x + 0.5) / W;
       const lon = bounds.west + u * dLon;
 
       const ele = sampleDemElevation(dem, bounds, lat, lon);
-      const eR = sampleDemElevation(dem, bounds, lat, lon + 0.00025);
-      const eL = sampleDemElevation(dem, bounds, lat, lon - 0.00025);
-      const eU = sampleDemElevation(dem, bounds, lat + 0.00025, lon);
-      const eD = sampleDemElevation(dem, bounds, lat - 0.00025, lon);
+      const eR = sampleDemElevation(dem, bounds, lat, lon + stepDeg);
+      const eL = sampleDemElevation(dem, bounds, lat, lon - stepDeg);
+      const eU = sampleDemElevation(dem, bounds, lat + stepDeg, lon);
+      const eD = sampleDemElevation(dem, bounds, lat - stepDeg, lon);
 
-      const dx = (eR - eL) / 54.0;
-      const dy = (eU - eD) / 55.0;
+      const dx = (eR - eL) / dxMeters;
+      const dy = (eU - eD) / dyMeters;
       const slope = Math.sqrt(dx * dx + dy * dy);
       const invLen = 1 / Math.sqrt(dx * dx + dy * dy + 1);
-      const shade = Math.max(0.18, Math.min(1.22, (-dx * sunX - dy * sunY + sunZ) * invLen * 1.25));
+      // Balanced procedural hillshade floor (0.42..1.18) so GPU DirectionalLight never crushes SE ridges
+      const shade = Math.max(0.42, Math.min(1.18, 0.32 + (-dx * sunX - dy * sunY + sunZ) * invLen * 0.88));
 
       let r = 0, g = 0, b = 0;
 
@@ -648,8 +833,8 @@ async function stitchSatelliteCanvas(
   dataset: NuiDinhDataset,
   fallbackTopo: HTMLCanvasElement
 ): Promise<HTMLCanvasElement> {
-  const W = 1536;
-  const H = 1536;
+  const W = 2048;
+  const H = 2048;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -658,13 +843,19 @@ async function stitchSatelliteCanvas(
   ctx.drawImage(fallbackTopo, 0, 0, W, H);
 
   const z = 15;
-  const lon2f = (lon: number) => ((lon + 180) / 360) * Math.pow(2, z);
+  const nTiles = Math.pow(2, z);
+  const lon2f = (lon: number) => ((lon + 180) / 360) * nTiles;
   const lat2f = (lat: number) => {
     const rad = (lat * Math.PI) / 180;
-    return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * Math.pow(2, z);
+    return ((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2) * nTiles;
+  };
+  const tile2lat = (tyTile: number) => {
+    const n = Math.PI - (2 * Math.PI * tyTile) / nTiles;
+    return (180 / Math.PI) * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
   };
 
   const { bounds } = dataset;
+  const dLat = bounds.north - bounds.south;
   const fxMin = lon2f(bounds.west);
   const fxMax = lon2f(bounds.east);
   const fyMin = lat2f(bounds.north);
@@ -704,10 +895,13 @@ async function stitchSatelliteCanvas(
               el.onerror = reject;
               el.src = url;
             });
+            // Exact per-tile Mercator-to-equirectangular projection (< 4mm drift across Nui Dinh!)
             const dx0 = ((tx - fxMin) / (fxMax - fxMin)) * W;
             const dx1 = ((tx + 1 - fxMin) / (fxMax - fxMin)) * W;
-            const dy0 = ((ty - fyMin) / (fyMax - fyMin)) * H;
-            const dy1 = ((ty + 1 - fyMin) / (fyMax - fyMin)) * H;
+            const latTop = tile2lat(ty);
+            const latBot = tile2lat(ty + 1);
+            const dy0 = ((bounds.north - latTop) / dLat) * H;
+            const dy1 = ((bounds.north - latBot) / dLat) * H;
             const imgScaleX = img.naturalWidth > 0 ? img.naturalWidth / 256 : 1;
             const imgScaleY = img.naturalHeight > 0 ? img.naturalHeight / 256 : 1;
             ctx.drawImage(
@@ -945,8 +1139,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     camera: THREE.PerspectiveCamera;
     renderer: THREE.WebGLRenderer;
     controls: OrbitControls;
+    ambientLight: THREE.AmbientLight;
+    sunLight: THREE.DirectionalLight;
     terrainMesh: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshStandardMaterial>;
-    skirtMesh: THREE.Mesh;
+    skirtMesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
     overlaysGroup: THREE.Group;
     pinsGroup: THREE.Group;
     trackGroup: THREE.Group;
@@ -964,7 +1160,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     playerMaterials: {
       coreMat: THREE.MeshBasicMaterial;
       haloMat: THREE.MeshBasicMaterial;
-      rangeMat: THREE.MeshBasicMaterial;
+      rangeMat: THREE.LineBasicMaterial;
       spireMat: THREE.MeshBasicMaterial;
       spireGlowMat: THREE.MeshBasicMaterial;
       pillarPulseMat: THREE.MeshBasicMaterial;
@@ -1070,7 +1266,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     rimLight.position.set(3000, 1800, 3200);
     scene.add(rimLight);
 
-    // Build Real 192x192 SRTM Terrain Geometry
+    // Build Real High-Res Copernicus GLO-30 Terrain Geometry
     const { cols, rows, elevations } = dataset.dem;
     const terrainGeo = new THREE.PlaneGeometry(widthM, depthM, cols - 1, rows - 1);
     terrainGeo.rotateX(-Math.PI / 2);
@@ -1097,20 +1293,20 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const terrainMesh = new THREE.Mesh(terrainGeo, terrainMat);
     scene.add(terrainMesh);
 
-    // Geological Sand-Table Base Plinth under the mountain block
-    const plinthGeo = new THREE.BoxGeometry(widthM + 20, 160, depthM + 20);
-    plinthGeo.translate(0, -82, 0);
-    const plinthMat = new THREE.MeshStandardMaterial({
-      color: 0x0c1117,
-      roughness: 0.95,
-      metalness: 0.08
+    // Watertight Geological Skirt Walls welded to every border vertex of terrainGeo down to y = -110
+    const skirtGeo = buildTerrainSkirtGeometry(terrainGeo, cols, rows, -110);
+    const skirtMat = new THREE.MeshStandardMaterial({
+      vertexColors: true,
+      roughness: 0.94,
+      metalness: 0.06,
+      side: THREE.DoubleSide
     });
-    const skirtMesh = new THREE.Mesh(plinthGeo, plinthMat);
+    const skirtMesh = new THREE.Mesh(skirtGeo, skirtMat);
     scene.add(skirtMesh);
 
     // Subtle North-South-East-West Cardinal Rim Ring & Perimeter Sprites
     const gridHelper = new THREE.GridHelper(Math.max(widthM, depthM) * 1.15, 24, 0x1e293b, 0x0d131a);
-    gridHelper.position.y = -4;
+    gridHelper.position.y = -112;
     scene.add(gridHelper);
 
     const staticDisposables: { dispose: () => void }[] = [];
@@ -1163,19 +1359,19 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     haloMesh.position.y = 4;
     playerGroup.add(haloMesh);
 
-    // Tactical 120m Perimeter Range Ring
-    const rangeGeo = new THREE.RingGeometry(118, 122, 48);
-    rangeGeo.rotateX(-Math.PI / 2);
-    const rangeMat = new THREE.MeshBasicMaterial({
+    // Terrain-Draped 120m Perimeter Range Ring (World-Space Dynamic BufferGeometry -> 0% burial on mountain slopes!)
+    const RANGE_SEGMENTS = 64;
+    const rangePositions = new Float32Array(RANGE_SEGMENTS * 3);
+    const rangeGeo = new THREE.BufferGeometry();
+    rangeGeo.setAttribute('position', new THREE.BufferAttribute(rangePositions, 3));
+    const rangeMat = new THREE.LineBasicMaterial({
       color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.24,
-      side: THREE.DoubleSide,
-      depthWrite: false
+      opacity: 0.42
     });
-    const rangeMesh = new THREE.Mesh(rangeGeo, rangeMat);
-    rangeMesh.position.y = 5;
-    playerGroup.add(rangeMesh);
+    const rangeRingLine = new THREE.LineLoop(rangeGeo, rangeMat);
+    rangeRingLine.frustumCulled = false;
+    scene.add(rangeRingLine);
     staticDisposables.push(rangeGeo, rangeMat);
 
     // 420m Sky Light Pillar (Bright core + soft outer aura + ascending pulse ring)
@@ -1224,55 +1420,67 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       pillarPulseMat
     );
 
-    // Sensor Compass View Frustum Fan (points along -Z when rotation.y = 0 => Due North!)
-    const sectorShape = new THREE.Shape();
-    sectorShape.moveTo(0, 0);
-    const coneRadius = 260;
-    const halfAngle = (26 * Math.PI) / 180;
-    const steps = 18;
-    for (let s = 0; s <= steps; s++) {
-      const a = -halfAngle + (s / steps) * halfAngle * 2;
-      // In Shape 2D before rotateX(-PI/2): +Y becomes -Z (North)!
-      sectorShape.lineTo(Math.sin(a) * coneRadius, Math.cos(a) * coneRadius);
+    // Terrain-Draped 260m Sensor Compass View Frustum Fan (12x12 polar grid hugging actual DEM elevation!)
+    const CONE_RADIAL_STEPS = 12;
+    const CONE_ANGLE_STEPS = 12;
+    const CONE_RADIUS = 260;
+    const CONE_HALF_ANGLE = (26 * Math.PI) / 180;
+    const coneVertCount = (CONE_RADIAL_STEPS + 1) * (CONE_ANGLE_STEPS + 1);
+    const conePositions = new Float32Array(coneVertCount * 3);
+    const coneIndices: number[] = [];
+    for (let r = 0; r < CONE_RADIAL_STEPS; r++) {
+      for (let s = 0; s < CONE_ANGLE_STEPS; s++) {
+        const a = r * (CONE_ANGLE_STEPS + 1) + s;
+        const b = a + 1;
+        const c = a + (CONE_ANGLE_STEPS + 1);
+        const d = c + 1;
+        coneIndices.push(a, c, b, b, c, d);
+      }
     }
-    sectorShape.closePath();
-    const coneGeo = new THREE.ShapeGeometry(sectorShape);
-    coneGeo.rotateX(-Math.PI / 2);
+    const coneGeo = new THREE.BufferGeometry();
+    coneGeo.setAttribute('position', new THREE.BufferAttribute(conePositions, 3));
+    coneGeo.setIndex(coneIndices);
     const coneMat = new THREE.MeshBasicMaterial({
       color: initOv.primaryNum,
       transparent: true,
-      opacity: 0.18,
+      opacity: 0.2,
       side: THREE.DoubleSide,
       depthWrite: false
     });
     const viewConeMesh = new THREE.Mesh(coneGeo, coneMat);
-    viewConeMesh.position.y = 8;
+    viewConeMesh.frustumCulled = false;
+    scene.add(viewConeMesh);
+    staticDisposables.push(coneGeo, coneMat);
 
-    // 380m Sighting Centerline along forward phone axis (-Z)
-    const sightBeamGeo = new THREE.BufferGeometry().setFromPoints([
-      new THREE.Vector3(0, 1, 0),
-      new THREE.Vector3(0, 1, -380)
-    ]);
+    // Terrain-Draped 380m Sighting Centerline along forward compass heading (22 terrain-hugging segments)
+    const SIGHT_STEPS = 22;
+    const SIGHT_LENGTH = 380;
+    const sightPositions = new Float32Array((SIGHT_STEPS + 1) * 3);
+    const sightBeamGeo = new THREE.BufferGeometry();
+    sightBeamGeo.setAttribute('position', new THREE.BufferAttribute(sightPositions, 3));
     const sightBeamMat = new THREE.LineBasicMaterial({
       color: initOv.playerCoreNum,
       transparent: true,
-      opacity: 0.58
+      opacity: 0.65
     });
-    viewConeMesh.add(new THREE.Line(sightBeamGeo, sightBeamMat));
+    const sightBeamLine = new THREE.Line(sightBeamGeo, sightBeamMat);
+    sightBeamLine.frustumCulled = false;
+    scene.add(sightBeamLine);
     staticDisposables.push(sightBeamGeo, sightBeamMat);
-    playerGroup.add(viewConeMesh);
 
-    // True GPS Course Arrow (Subdued Olive/Emerald Vector)
+    // True GPS Course Arrow (Slope-pitched along forward terrain grade so it climbs ridges cleanly)
     const courseArrowGroup = new THREE.Group();
-    const shaftGeo = new THREE.CylinderGeometry(3.2, 3.2, 130, 8);
+    courseArrowGroup.rotation.order = 'YXZ';
+    const shaftGeo = new THREE.CylinderGeometry(3.0, 3.0, 88, 8);
     shaftGeo.rotateX(Math.PI / 2);
-    shaftGeo.translate(0, 12, -65);
-    const headGeo = new THREE.ConeGeometry(12, 34, 12);
+    shaftGeo.translate(0, 14, -46);
+    const headGeo = new THREE.ConeGeometry(11, 30, 12);
     headGeo.rotateX(-Math.PI / 2);
-    headGeo.translate(0, 12, -142);
+    headGeo.translate(0, 14, -100);
     const arrowMat = new THREE.MeshBasicMaterial({ color: initOv.arrowNum });
     courseArrowGroup.add(new THREE.Mesh(shaftGeo, arrowMat), new THREE.Mesh(headGeo, arrowMat));
     playerGroup.add(courseArrowGroup);
+    staticDisposables.push(shaftGeo, headGeo, arrowMat);
 
     // Raycast Inspect Ring Marker
     const inspectGeo = new THREE.RingGeometry(14, 22, 24);
@@ -1287,12 +1495,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const inspectMarker = new THREE.Mesh(inspectGeo, inspectMat);
     inspectMarker.visible = false;
     scene.add(inspectMarker);
+    staticDisposables.push(inspectGeo, inspectMat);
 
     sceneRef.current = {
       scene,
       camera,
       renderer,
       controls,
+      ambientLight: ambient,
+      sunLight,
       terrainMesh,
       skirtMesh,
       overlaysGroup,
@@ -1490,12 +1701,94 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     let rafId = 0;
     let frameCounter = 0;
     const tempV = new THREE.Vector3();
+    const terrainNormal = new THREE.Vector3(0, 1, 0);
     const chevronDir = new THREE.Vector3();
     const chevronRight = new THREE.Vector3();
     const chevronUp = new THREE.Vector3();
     const chevronZAxis = new THREE.Vector3();
     const chevronMat4 = new THREE.Matrix4();
-    const WORLD_UP = new THREE.Vector3(0, 1, 0);
+    const lastDrapeState = { px: NaN, pz: NaN, heading: NaN, vScale: NaN };
+
+    const updateDrapedPlayerOverlays = (
+      px: number,
+      pz: number,
+      headingDeg: number,
+      vScale: number
+    ) => {
+      const moved =
+        !Number.isFinite(lastDrapeState.px) ||
+        Math.hypot(px - lastDrapeState.px, pz - lastDrapeState.pz) > 0.45 ||
+        Math.abs(headingDeg - lastDrapeState.heading) > 0.25 ||
+        vScale !== lastDrapeState.vScale;
+      if (!moved) return;
+
+      lastDrapeState.px = px;
+      lastDrapeState.pz = pz;
+      lastDrapeState.heading = headingDeg;
+      lastDrapeState.vScale = vScale;
+
+      // 1. Update 120m terrain-conforming range ring
+      const rPos = rangeGeo.attributes.position as THREE.BufferAttribute;
+      for (let i = 0; i < RANGE_SEGMENTS; i++) {
+        const a = (i / RANGE_SEGMENTS) * Math.PI * 2;
+        const wx = px + Math.sin(a) * 120;
+        const wz = pz - Math.cos(a) * 120;
+        const ll = world3DToLatLon(wx, wz, dataset.bounds);
+        const clamped = clampLatLonToBounds(ll.lat, ll.lon, dataset.bounds);
+        const [cx, cy, cz] = latLonToWorld3D(
+          clamped.lat,
+          clamped.lon,
+          sampleDemElevation(dataset.dem, dataset.bounds, clamped.lat, clamped.lon),
+          dataset.bounds,
+          vScale
+        );
+        rPos.setXYZ(i, cx, cy + 4.5, cz);
+      }
+      rPos.needsUpdate = true;
+
+      // 2. Update 260m terrain-conforming compass view frustum fan
+      const headRad = (headingDeg * Math.PI) / 180;
+      const cPos = coneGeo.attributes.position as THREE.BufferAttribute;
+      let vi = 0;
+      for (let r = 0; r <= CONE_RADIAL_STEPS; r++) {
+        const dist = (r / CONE_RADIAL_STEPS) * CONE_RADIUS;
+        for (let s = 0; s <= CONE_ANGLE_STEPS; s++) {
+          const az = headRad - CONE_HALF_ANGLE + (s / CONE_ANGLE_STEPS) * CONE_HALF_ANGLE * 2;
+          const wx = px + Math.sin(az) * dist;
+          const wz = pz - Math.cos(az) * dist;
+          const ll = world3DToLatLon(wx, wz, dataset.bounds);
+          const clamped = clampLatLonToBounds(ll.lat, ll.lon, dataset.bounds);
+          const [cx, cy, cz] = latLonToWorld3D(
+            clamped.lat,
+            clamped.lon,
+            sampleDemElevation(dataset.dem, dataset.bounds, clamped.lat, clamped.lon),
+            dataset.bounds,
+            vScale
+          );
+          cPos.setXYZ(vi++, cx, cy + 5.5, cz);
+        }
+      }
+      cPos.needsUpdate = true;
+
+      // 3. Update 380m terrain-draped compass sighting centerline
+      const sPos = sightBeamGeo.attributes.position as THREE.BufferAttribute;
+      for (let k = 0; k <= SIGHT_STEPS; k++) {
+        const dist = (k / SIGHT_STEPS) * SIGHT_LENGTH;
+        const wx = px + Math.sin(headRad) * dist;
+        const wz = pz - Math.cos(headRad) * dist;
+        const ll = world3DToLatLon(wx, wz, dataset.bounds);
+        const clamped = clampLatLonToBounds(ll.lat, ll.lon, dataset.bounds);
+        const [cx, cy, cz] = latLonToWorld3D(
+          clamped.lat,
+          clamped.lon,
+          sampleDemElevation(dataset.dem, dataset.bounds, clamped.lat, clamped.lon),
+          dataset.bounds,
+          vScale
+        );
+        sPos.setXYZ(k, cx, cy + 6.8, cz);
+      }
+      sPos.needsUpdate = true;
+    };
 
     const animate = () => {
       rafId = requestAnimationFrame(animate);
@@ -1519,6 +1812,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       );
       playerGroup.position.lerp(new THREE.Vector3(px, py, pz), 0.25);
 
+      // Update terrain-hugging 120m range ring, 260m compass view fan, and 380m sightline beam
+      updateDrapedPlayerOverlays(
+        playerGroup.position.x,
+        playerGroup.position.z,
+        st.compassHeading,
+        st.verticalScale
+      );
+
       // Pulse ground halo & ascending light-pillar ring
       const nowMs = performance.now();
       const pulse = 1 + Math.sin(nowMs * 0.0045) * 0.18;
@@ -1529,7 +1830,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       pillarPulseMesh.scale.set(ringScale, ringScale, ringScale);
       pillarPulseMat.opacity = (1 - liftPhase) * 0.85;
 
-      // Animate GTA V 3D Tactical Route Chevrons (42 m/s continuous terrain flow) & Destination Beacon
+      // Animate GTA V 3D Tactical Route Chevrons (42 m/s continuous terrain flow aligned to surface normal) & Destination Beacon
       const flow = routeFlowDataRef.current;
       if (flow && flow.totalDist > 8 && flow.chevrons.length > 0) {
         const { worldPts, cumDist, totalDist, chevrons, destRing, destCore } = flow;
@@ -1556,12 +1857,13 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           const pA = worldPts[lo];
           const pB = worldPts[lo + 1];
           ch.position.lerpVectors(pA, pB, frac);
-          ch.position.y += 7.5;
+          ch.position.y += 7.8;
 
           chevronDir.subVectors(pB, pA);
           if (chevronDir.lengthSq() > 1e-4) {
             chevronDir.normalize();
-            chevronRight.crossVectors(chevronDir, WORLD_UP);
+            sampleTerrainNormal3D(ch.position.x, ch.position.z, dataset, st.verticalScale, terrainNormal);
+            chevronRight.crossVectors(chevronDir, terrainNormal);
             if (chevronRight.lengthSq() < 1e-4) chevronRight.set(1, 0, 0);
             else chevronRight.normalize();
             chevronZAxis.copy(chevronDir).negate();
@@ -1574,7 +1876,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
 
         if (destRing) {
           const dScale = 1 + Math.sin(nowMs * 0.0055) * 0.22;
-          destRing.scale.set(dScale, dScale, dScale);
+          destRing.scale.set(dScale, 1, dScale);
         }
         if (destCore) {
           destCore.rotation.y += 0.032;
@@ -1582,14 +1884,22 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         }
       }
 
-      // Rotate Compass View Cone (clockwise bearing -> negative Y rotation in Three.js!)
-      const targetConeRotY = -(st.compassHeading * Math.PI) / 180;
-      viewConeMesh.rotation.y = targetConeRotY;
-
-      // GPS Course Arrow visible when moving or in sim mode
+      // GPS Course Arrow visible when moving or in sim mode (pitched along local terrain grade!)
       if (st.gpsCourse !== null && (st.speedMps === null || st.speedMps > 0.35 || st.isSimMode)) {
         courseArrowGroup.visible = true;
-        courseArrowGroup.rotation.y = -(st.gpsCourse * Math.PI) / 180;
+        const courseRad = (st.gpsCourse * Math.PI) / 180;
+        courseArrowGroup.rotation.y = -courseRad;
+        const aheadX = playerGroup.position.x + Math.sin(courseRad) * 65;
+        const aheadZ = playerGroup.position.z - Math.cos(courseRad) * 65;
+        const aheadLl = clampLatLonToBounds(
+          world3DToLatLon(aheadX, aheadZ, dataset.bounds).lat,
+          world3DToLatLon(aheadX, aheadZ, dataset.bounds).lon,
+          dataset.bounds
+        );
+        const yAhead =
+          sampleDemElevation(dataset.dem, dataset.bounds, aheadLl.lat, aheadLl.lon) * st.verticalScale;
+        const pitchRad = Math.max(-0.58, Math.min(0.58, Math.atan2(yAhead - playerGroup.position.y, 65)));
+        courseArrowGroup.rotation.x = pitchRad;
       } else {
         courseArrowGroup.visible = false;
       }
@@ -1804,6 +2114,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         curCtx.satTexture?.dispose();
         curCtx.terrainMesh.geometry.dispose();
         curCtx.terrainMesh.material.dispose();
+        curCtx.skirtMesh.geometry.dispose();
+        curCtx.skirtMesh.material.dispose();
       }
       controls.dispose();
       renderer.dispose();
@@ -1814,7 +2126,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     };
   }, [dataset]);
 
-  // 2. Update Terrain Vertical Exaggeration dynamically
+  // 2. Update Terrain Vertical Exaggeration & Watertight Skirt dynamically
   useEffect(() => {
     const ctx = sceneRef.current;
     if (!ctx) return;
@@ -1827,6 +2139,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     ctx.terrainMesh.geometry.computeVertexNormals();
     ctx.terrainMesh.geometry.computeBoundingBox();
     ctx.terrainMesh.geometry.computeBoundingSphere();
+    updateTerrainSkirtY(ctx.skirtMesh.geometry, ctx.terrainMesh.geometry);
   }, [dataset, verticalScale]);
 
   // 3. Switch 3D Terrain Skin & Spec-Ops Palette (Slate / Olive / Amber / Vivid)
@@ -1834,6 +2147,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const ctx = sceneRef.current;
     if (!ctx) return;
     let cancelled = false;
+
+    // Balance lighting so real Google Satellite imagery stays vivid & bright while procedural skins show crisp relief
+    if (skin === 'satellite') {
+      ctx.ambientLight.intensity = 1.68;
+      ctx.sunLight.intensity = 0.72;
+      ctx.terrainMesh.material.roughness = 0.96;
+    } else {
+      ctx.ambientLight.intensity = 1.1;
+      ctx.sunLight.intensity = 1.32;
+      ctx.terrainMesh.material.roughness = 0.9;
+    }
 
     const ov = getMapOverlayPalette(palette);
     ctx.playerMaterials.coreMat.color.setHex(ov.beaconCoreNum);
@@ -1946,6 +2270,83 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       addDrapedPolylineClipped(s.coords, ov.stream, 3.5, ov.streamOpacity, 18);
     }
 
+    // All 11 Real Lakes & Reservoirs in 3D (Hồ Đá Xanh, Hồ Bên Suối Dinh, Suối Đá pools)
+    if (dataset.lakes && dataset.lakes.length > 0) {
+      const lakeFillColor =
+        palette === 'vivid'
+          ? 0x0ea5e9
+          : palette === 'amber'
+            ? 0x5c4f3b
+            : palette === 'olive'
+              ? 0x2a5458
+              : 0x1e4c6b;
+      const lakeEdgeHex =
+        palette === 'vivid'
+          ? '#38BDF8'
+          : palette === 'amber'
+            ? '#A38355'
+            : palette === 'olive'
+              ? '#648F8A'
+              : '#4E82A6';
+
+      for (const lake of dataset.lakes) {
+        if (!lake.coords || lake.coords.length < 3) continue;
+        const ring = lake.coords.slice();
+        const first = ring[0];
+        const last = ring[ring.length - 1];
+        if (ring.length > 3 && first[0] === last[0] && first[1] === last[1]) {
+          ring.pop();
+        }
+        if (ring.length < 3) continue;
+
+        // Compute hydro-flattened water surface elevation (25th percentile along shoreline)
+        const shoreEles = ring
+          .map(([lat, lon]) => sampleDemElevation(dataset.dem, dataset.bounds, lat, lon))
+          .sort((a, b) => a - b);
+        const waterEle = shoreEles[Math.floor(shoreEles.length * 0.25)];
+        const waterY = waterEle * verticalScale + 1.6;
+
+        const contour2D: THREE.Vector2[] = [];
+        for (const [lat, lon] of ring) {
+          const [wx, , wz] = latLonToWorld3D(lat, lon, waterEle, dataset.bounds, verticalScale);
+          contour2D.push(new THREE.Vector2(wx, wz));
+        }
+
+        const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
+        if (faces.length > 0) {
+          const positions = new Float32Array(contour2D.length * 3);
+          for (let i = 0; i < contour2D.length; i++) {
+            positions[i * 3] = contour2D[i].x;
+            positions[i * 3 + 1] = waterY;
+            positions[i * 3 + 2] = contour2D[i].y;
+          }
+          const idxArr: number[] = [];
+          for (const [a, b, c] of faces) {
+            idxArr.push(a, c, b);
+          }
+          const lakeGeo = new THREE.BufferGeometry();
+          lakeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          lakeGeo.setIndex(idxArr);
+          lakeGeo.computeVertexNormals();
+          const lakeMat = new THREE.MeshStandardMaterial({
+            color: lakeFillColor,
+            roughness: 0.28,
+            metalness: 0.35,
+            transparent: true,
+            opacity: palette === 'vivid' ? 0.82 : 0.72,
+            side: THREE.DoubleSide,
+            polygonOffset: true,
+            polygonOffsetFactor: -2,
+            polygonOffsetUnits: -2
+          });
+          grp.add(new THREE.Mesh(lakeGeo, lakeMat));
+        }
+
+        // Crisp shoreline contour outline
+        addDrapedPolylineClipped(lake.coords, lakeEdgeHex, 2.2, palette === 'vivid' ? 0.78 : 0.52, 18);
+      }
+    }
+
     // 220kV High-Voltage Powerline Corridor (clipped to plinth & subdivided every 18m over ridges!)
     if (dataset.powerlines) {
       for (const pl of dataset.powerlines) {
@@ -2028,14 +2429,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       addDrapedPolylineClipped(clippedPoly, wallHex, wallHeight, ov.hazardLineOpacity, 50);
     }
 
-    // Hazard Beacons & Trail Junction Rings (anchored strictly to triangle mesh elevation!)
+    // Hazard Beacons, Trail Junction Rings & Summit Monuments (draped strictly to DEM surface!)
     for (const poi of dataset.pois) {
       if (poi.category === 'warning') {
         const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
         const [hx, hy, hz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
-        const ringGeo = new THREE.RingGeometry(18, 30, 24);
-        ringGeo.rotateX(-Math.PI / 2);
-        ringGeo.translate(hx, hy + 4.5, hz);
+        const ringGeo = createDrapedRingGeometry(poi.lat, poi.lon, 18, 30, 4.5, 24, dataset, verticalScale);
         const ringMat = new THREE.MeshBasicMaterial({
           color: ov.warningNum,
           transparent: true,
@@ -2053,11 +2452,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         });
         grp.add(new THREE.Mesh(beamGeo, beamMat));
       } else if (poi.category === 'junction') {
-        const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
-        const [jx, jy, jz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
-        const jRingGeo = new THREE.RingGeometry(12, 20, 20);
-        jRingGeo.rotateX(-Math.PI / 2);
-        jRingGeo.translate(jx, jy + 5, jz);
+        const jRingGeo = createDrapedRingGeometry(poi.lat, poi.lon, 12, 20, 4.8, 20, dataset, verticalScale);
         const jRingMat = new THREE.MeshBasicMaterial({
           color: ov.junctionNum,
           transparent: true,
@@ -2066,14 +2461,38 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         });
         grp.add(new THREE.Mesh(jRingGeo, jRingMat));
       } else if (poi.id === 'verified-la-ban-helipad') {
-        // 3D Tactical Summit Helipad "H" & Beacon Spire at Đỉnh La Bàn (495m)
+        // 3D Tactical Summit Helipad "H" on a solid foundation pedestal + terrain-draped beacon ring at Đỉnh La Bàn (495m)
         const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
         const [sx, sy, sz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
         const padColor = palette === 'amber' ? 0xf59e0b : palette === 'olive' ? 0xbef264 : 0x7dd3fc;
 
-        const outerRingGeo = new THREE.RingGeometry(18, 26, 32);
-        outerRingGeo.rotateX(-Math.PI / 2);
-        outerRingGeo.translate(sx, sy + 6, sz);
+        // Compute highest uphill terrain around the 18m concrete pad rim so pad top is NEVER buried uphill!
+        let maxRimY = sy;
+        for (let a = 0; a < 360; a += 30) {
+          const rad = (a * Math.PI) / 180;
+          const rimLl = world3DToLatLon(sx + Math.cos(rad) * 18.5, sz + Math.sin(rad) * 18.5, dataset.bounds);
+          const rimY = sampleDemElevation(dataset.dem, dataset.bounds, rimLl.lat, rimLl.lon) * verticalScale;
+          if (rimY > maxRimY) maxRimY = rimY;
+        }
+        const deckTopY = maxRimY + 3.0;
+        const pedestalH = Math.max(26, deckTopY - (sy - 26));
+
+        // Solid concrete/granite summit foundation pedestal (eliminates downhill mid-air gap!)
+        const pedGeo = new THREE.CylinderGeometry(18.5, 22.5, pedestalH, 28);
+        pedGeo.translate(sx, deckTopY - pedestalH / 2, sz);
+        grp.add(
+          new THREE.Mesh(
+            pedGeo,
+            new THREE.MeshStandardMaterial({
+              color: 0x111a26,
+              roughness: 0.85,
+              metalness: 0.15
+            })
+          )
+        );
+
+        // Terrain-hugging outer beacon ring around the helipad summit
+        const outerRingGeo = createDrapedRingGeometry(poi.lat, poi.lon, 21, 29, 4.5, 32, dataset, verticalScale);
         grp.add(
           new THREE.Mesh(
             outerRingGeo,
@@ -2086,36 +2505,34 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           )
         );
 
-        const padDiscGeo = new THREE.CircleGeometry(17.5, 28);
+        const padDiscGeo = new THREE.CircleGeometry(17.8, 28);
         padDiscGeo.rotateX(-Math.PI / 2);
-        padDiscGeo.translate(sx, sy + 5.2, sz);
+        padDiscGeo.translate(sx, deckTopY + 0.4, sz);
         grp.add(
           new THREE.Mesh(
             padDiscGeo,
             new THREE.MeshBasicMaterial({
               color: 0x09101a,
-              transparent: true,
-              opacity: 0.82,
               side: THREE.DoubleSide
             })
           )
         );
 
-        // Helipad "H" crossbars on summit rock platform
+        // Helipad "H" crossbars flush on top of the solid deck
         const hMat = new THREE.MeshBasicMaterial({ color: padColor, side: THREE.DoubleSide });
         const leftBarGeo = new THREE.PlaneGeometry(4, 18);
         leftBarGeo.rotateX(-Math.PI / 2);
-        leftBarGeo.translate(sx - 6, sy + 6.5, sz);
+        leftBarGeo.translate(sx - 6, deckTopY + 0.9, sz);
         const rightBarGeo = new THREE.PlaneGeometry(4, 18);
         rightBarGeo.rotateX(-Math.PI / 2);
-        rightBarGeo.translate(sx + 6, sy + 6.5, sz);
+        rightBarGeo.translate(sx + 6, deckTopY + 0.9, sz);
         const midBarGeo = new THREE.PlaneGeometry(12, 3.6);
         midBarGeo.rotateX(-Math.PI / 2);
-        midBarGeo.translate(sx, sy + 6.5, sz);
+        midBarGeo.translate(sx, deckTopY + 0.9, sz);
         grp.add(new THREE.Mesh(leftBarGeo, hMat), new THREE.Mesh(rightBarGeo, hMat), new THREE.Mesh(midBarGeo, hMat));
 
         const spireGeo = new THREE.CylinderGeometry(1.6, 5, 75, 10);
-        spireGeo.translate(sx, sy + 42, sz);
+        spireGeo.translate(sx, deckTopY + 37.5, sz);
         grp.add(
           new THREE.Mesh(
             spireGeo,
@@ -2127,14 +2544,12 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
           )
         );
       } else if (poi.id === 'osm-node-4789726675') {
-        // 3D Summit Beacon & Ring at Đỉnh Núi Bao Quan (504m)
+        // 3D Summit Beacon & Terrain-Draped Ring at Đỉnh Núi Bao Quan (504m)
         const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
         const [bx, by, bz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
         const summitCol = palette === 'vivid' ? 0xffd60a : 0xc8a25a;
 
-        const bRingGeo = new THREE.RingGeometry(15, 22, 28);
-        bRingGeo.rotateX(-Math.PI / 2);
-        bRingGeo.translate(bx, by + 5.5, bz);
+        const bRingGeo = createDrapedRingGeometry(poi.lat, poi.lon, 15, 23, 4.5, 28, dataset, verticalScale);
         grp.add(
           new THREE.Mesh(
             bRingGeo,
@@ -2148,7 +2563,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         );
 
         const bSpireGeo = new THREE.CylinderGeometry(1.5, 4.5, 65, 10);
-        bSpireGeo.translate(bx, by + 37, bz);
+        bSpireGeo.translate(bx, by + 32.5, bz);
         grp.add(
           new THREE.Mesh(
             bSpireGeo,
@@ -2186,10 +2601,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       });
       grp.add(new THREE.Mesh(pillarGeo, pillarMat));
 
-      // Ground Ring
-      const ringGeo = new THREE.RingGeometry(10, 17, 20);
-      ringGeo.rotateX(-Math.PI / 2);
-      ringGeo.translate(x, y + 3.5, z);
+      // Terrain-Draped Ground Ring
+      const ringGeo = createDrapedRingGeometry(pin.lat, pin.lon, 10, 17, 3.8, 20, dataset, verticalScale);
       const ringMat = new THREE.MeshBasicMaterial({
         color: col,
         side: THREE.DoubleSide
@@ -2311,25 +2724,31 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
     const arcMat = new THREE.LineBasicMaterial({ color: ov.arcNum });
     grp.add(new THREE.Line(arcGeo, arcMat));
 
-    // 2. Draped Ground Slope Line (only when no GTA trail route is active so paths don't clutter)
+    // 2. Draped Ground Slope Line (18m adaptive subdivision so long target lines never tunnel through ridges!)
     if (!activeRoute) {
-      const groundPts: THREE.Vector3[] = [];
-      const samples = 40;
-      for (let i = 0; i <= samples; i++) {
-        const f = i / samples;
-        const lat = clampedStart.lat + (clampedTarget.lat - clampedStart.lat) * f;
-        const lon = clampedStart.lon + (clampedTarget.lon - clampedStart.lon) * f;
-        const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
-        const [gx, gy, gz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
-        groundPts.push(new THREE.Vector3(gx, gy + 6, gz));
+      const slopeRuns = clipAndSubdividePolylineToBounds(
+        [
+          [clampedStart.lat, clampedStart.lon],
+          [clampedTarget.lat, clampedTarget.lon]
+        ],
+        dataset.bounds,
+        18
+      );
+      for (const run of slopeRuns) {
+        if (run.length < 2) continue;
+        const groundPts = run.map(([lat, lon]) => {
+          const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
+          const [gx, gy, gz] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
+          return new THREE.Vector3(gx, gy + 6, gz);
+        });
+        const groundGeo = new THREE.BufferGeometry().setFromPoints(groundPts);
+        const groundMat = new THREE.LineBasicMaterial({
+          color: ov.groundArcNum,
+          transparent: true,
+          opacity: 0.72
+        });
+        grp.add(new THREE.Line(groundGeo, groundMat));
       }
-      const groundGeo = new THREE.BufferGeometry().setFromPoints(groundPts);
-      const groundMat = new THREE.LineBasicMaterial({
-        color: ov.groundArcNum,
-        transparent: true,
-        opacity: 0.72
-      });
-      grp.add(new THREE.Line(groundGeo, groundMat));
     }
   }, [dataset, lockedTarget, lockedBearing, activeRoute, playerLat, playerLon, playerEle, verticalScale, palette]);
 
@@ -2357,9 +2776,19 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         const len = Math.hypot(tx, tz) || 1;
         const rx = (-tz / len) * halfW;
         const rz = (tx / len) * halfW;
-        const py = pts[i].y + liftOffset;
-        positions.push(pts[i].x - rx, py, pts[i].z - rz);
-        positions.push(pts[i].x + rx, py, pts[i].z + rz);
+
+        // Sample actual DEM elevation independently at left & right ribbon edges -> 0% cross-slope underground burial!
+        const lx = pts[i].x - rx;
+        const lz = pts[i].z - rz;
+        const rxPos = pts[i].x + rx;
+        const rzPos = pts[i].z + rz;
+        const llLeft = world3DToLatLon(lx, lz, dataset.bounds);
+        const llRight = world3DToLatLon(rxPos, rzPos, dataset.bounds);
+        const leftGroundY = sampleDemElevation(dataset.dem, dataset.bounds, llLeft.lat, llLeft.lon) * verticalScale;
+        const rightGroundY = sampleDemElevation(dataset.dem, dataset.bounds, llRight.lat, llRight.lon) * verticalScale;
+
+        positions.push(lx, Math.max(leftGroundY, pts[i].y - 1.5) + liftOffset, lz);
+        positions.push(rxPos, Math.max(rightGroundY, pts[i].y - 1.5) + liftOffset, rzPos);
       }
       const triIndices: number[] = [];
       for (let i = 0; i < pts.length - 1; i++) {
@@ -2476,9 +2905,17 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
       verticalScale
     );
 
-    const destRingGeo = new THREE.RingGeometry(18, 28, 32);
-    destRingGeo.rotateX(-Math.PI / 2);
-    destRingGeo.translate(dx, dy + 6.5, dz);
+    const destRingGeo = createDrapedRingGeometry(
+      activeRoute.destLat,
+      activeRoute.destLon,
+      18,
+      28,
+      6.5,
+      32,
+      dataset,
+      verticalScale,
+      true
+    );
     const destRing = new THREE.Mesh(
       destRingGeo,
       new THREE.MeshBasicMaterial({
@@ -2489,6 +2926,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = ({
         depthWrite: false
       })
     );
+    destRing.position.set(dx, dy, dz);
     grp.add(destRing);
 
     const destCoreGeo = new THREE.OctahedronGeometry(13, 0);
