@@ -50,6 +50,7 @@ interface Terrain3DViewProps {
   playerEle: number;
   playerAccuracy: number | null;
   compassHeading: number; // 0..360 deg (0 = North)
+  liveHeadingRef?: React.MutableRefObject<number>; // Continuous sub-degree 120Hz magnetometer ref
   gpsCourse: number | null; // 0..360 deg when moving
   speedMps: number | null;
   userPins: UserPin[];
@@ -240,6 +241,9 @@ function clearAndDisposeGroup(grp: THREE.Group): void {
       } else {
         meshOrLine.material.dispose();
       }
+    }
+    if ('dispose' in ch && typeof (ch as THREE.InstancedMesh).dispose === 'function') {
+      (ch as THREE.InstancedMesh).dispose();
     }
   }
 }
@@ -498,8 +502,11 @@ function buildProceduralTerrainCanvas(
   mode: 'tactical' | 'topo' | 'night',
   palette: TacticalPalette = 'slate'
 ): HTMLCanvasElement {
-  const W = 1536;
-  const H = 1536;
+  const isMobileCoarse =
+    typeof window !== 'undefined' &&
+    (window.matchMedia?.('(pointer: coarse)').matches || window.devicePixelRatio >= 2.2);
+  const W = isMobileCoarse ? 1024 : 1536;
+  const H = W;
   const canvas = document.createElement('canvas');
   canvas.width = W;
   canvas.height = H;
@@ -959,6 +966,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
   playerLon,
   playerEle,
   compassHeading,
+  liveHeadingRef,
   gpsCourse,
   speedMps,
   userPins,
@@ -1053,7 +1061,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     worldPts: THREE.Vector3[];
     cumDist: number[];
     totalDist: number;
-    chevrons: THREE.Mesh[];
+    chevronMesh: THREE.InstancedMesh | null;
+    chevronCount: number;
     destRing: THREE.Mesh | null;
     destCore: THREE.Mesh | null;
   } | null>(null);
@@ -1171,6 +1180,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     playerLon,
     playerEle,
     compassHeading,
+    liveHeadingRef,
     gpsCourse,
     speedMps,
     cameraMode,
@@ -1191,6 +1201,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     playerLon,
     playerEle,
     compassHeading,
+    liveHeadingRef,
     gpsCourse,
     speedMps,
     cameraMode,
@@ -1275,7 +1286,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     let activePixelRatio = basePixelRatio;
 
     const renderer = new THREE.WebGLRenderer({
-      antialias: true,
+      antialias: !isMobileCoarse,
       stencil: false,
       preserveDrawingBuffer: false,
       powerPreference: 'high-performance'
@@ -1809,6 +1820,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     const chevronUp = new THREE.Vector3();
     const chevronZAxis = new THREE.Vector3();
     const chevronMat4 = new THREE.Matrix4();
+    const chevronPos = new THREE.Vector3();
+    const chevronQuat = new THREE.Quaternion();
+    const chevronScaleOn = new THREE.Vector3(1, 1, 1);
+    const chevronScaleOff = new THREE.Vector3(0, 0, 0);
     const lastDrapeState = { px: NaN, pz: NaN, heading: NaN, vScale: NaN };
     const lastPlayerInput = { lat: NaN, lon: NaN, vScale: NaN, px: 0, py: 0, pz: 0 };
     const lastCourseState = { px: NaN, pz: NaN, course: NaN, vScale: NaN };
@@ -1821,8 +1836,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     ) => {
       const moved =
         !Number.isFinite(lastDrapeState.px) ||
-        Math.hypot(px - lastDrapeState.px, pz - lastDrapeState.pz) > 0.45 ||
-        Math.abs(headingDeg - lastDrapeState.heading) > 0.25 ||
+        Math.hypot(px - lastDrapeState.px, pz - lastDrapeState.pz) > 0.55 ||
+        Math.abs(((headingDeg - lastDrapeState.heading + 540) % 360) - 180) > 0.65 ||
         vScale !== lastDrapeState.vScale;
       if (!moved) return;
 
@@ -1966,11 +1981,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         playerGroup.position.lerp(tmpPlayerTarget, damp(15));
       }
 
+      // Read continuous sub-degree 120Hz heading directly from liveHeadingRef (0 React lag!)
+      const liveHeading = st.liveHeadingRef ? st.liveHeadingRef.current : st.compassHeading;
+
       // Update terrain-hugging 120m range ring, 260m compass view fan, and 380m sightline beam (dirty-checked!)
       updateDrapedPlayerOverlays(
         playerGroup.position.x,
         playerGroup.position.z,
-        st.compassHeading,
+        liveHeading,
         st.verticalScale
       );
 
@@ -1983,16 +2001,15 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
       pillarPulseMesh.scale.set(ringScale, ringScale, ringScale);
       pillarPulseMat.opacity = (1 - liftPhase) * 0.85;
 
-      // Animate GTA V 3D Tactical Route Chevrons (42 m/s continuous terrain flow aligned to surface normal) & Destination Beacon
+      // Animate GTA V 3D Tactical Route Chevrons via 1 InstancedMesh draw call (42 m/s continuous terrain flow)
       const flow = routeFlowDataRef.current;
-      if (flow && flow.totalDist > 8 && flow.chevrons.length > 0) {
-        const { worldPts, cumDist, totalDist, chevrons, destRing, destCore } = flow;
-        const spacing = totalDist / chevrons.length;
+      if (flow && flow.totalDist > 8 && flow.chevronMesh && flow.chevronCount > 0) {
+        const { worldPts, cumDist, totalDist, chevronMesh, chevronCount, destRing, destCore } = flow;
+        const spacing = totalDist / chevronCount;
         const speedMps = 42;
         const shiftM = (nowMs * 0.001 * speedMps) % totalDist;
 
-        for (let i = 0; i < chevrons.length; i++) {
-          const ch = chevrons[i];
+        for (let i = 0; i < chevronCount; i++) {
           const targetD = (i * spacing + shiftM) % totalDist;
 
           // Locate segment containing targetD via binary search
@@ -2009,23 +2026,30 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
 
           const pA = worldPts[lo];
           const pB = worldPts[lo + 1];
-          ch.position.lerpVectors(pA, pB, frac);
-          ch.position.y += 7.8;
+          chevronPos.lerpVectors(pA, pB, frac);
+          chevronPos.y += 7.8;
 
-          chevronDir.subVectors(pB, pA);
-          if (chevronDir.lengthSq() > 1e-4) {
-            chevronDir.normalize();
-            sampleTerrainNormal3D(ch.position.x, ch.position.z, dataset, st.verticalScale, terrainNormal);
-            chevronRight.crossVectors(chevronDir, terrainNormal);
-            if (chevronRight.lengthSq() < 1e-4) chevronRight.set(1, 0, 0);
-            else chevronRight.normalize();
-            chevronZAxis.copy(chevronDir).negate();
-            chevronUp.crossVectors(chevronZAxis, chevronRight).normalize();
-            chevronMat4.makeBasis(chevronRight, chevronUp, chevronZAxis);
-            ch.quaternion.setFromRotationMatrix(chevronMat4);
+          const visible = targetD > 10 && targetD < totalDist - 12;
+          if (visible) {
+            chevronDir.subVectors(pB, pA);
+            if (chevronDir.lengthSq() > 1e-4) {
+              chevronDir.normalize();
+              sampleTerrainNormal3D(chevronPos.x, chevronPos.z, dataset, st.verticalScale, terrainNormal);
+              chevronRight.crossVectors(chevronDir, terrainNormal);
+              if (chevronRight.lengthSq() < 1e-4) chevronRight.set(1, 0, 0);
+              else chevronRight.normalize();
+              chevronZAxis.copy(chevronDir).negate();
+              chevronUp.crossVectors(chevronZAxis, chevronRight).normalize();
+              chevronMat4.makeBasis(chevronRight, chevronUp, chevronZAxis);
+              chevronQuat.setFromRotationMatrix(chevronMat4);
+            }
+            chevronMat4.compose(chevronPos, chevronQuat, chevronScaleOn);
+          } else {
+            chevronMat4.compose(chevronPos, chevronQuat, chevronScaleOff);
           }
-          ch.visible = targetD > 10 && targetD < totalDist - 12;
+          chevronMesh.setMatrixAt(i, chevronMat4);
         }
+        chevronMesh.instanceMatrix.needsUpdate = true;
 
         if (destRing) {
           const dScale = 1 + Math.sin(nowMs * 0.0055) * 0.22;
@@ -2067,7 +2091,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
 
       // Chase Camera Mode ("Khóa góc nhìn sau lưng theo hướng đi") — zero-allocation + dt-normalized!
       if (st.cameraMode === 'chase') {
-        const headingRad = ((st.gpsCourse ?? st.compassHeading) * Math.PI) / 180;
+        const headingRad = ((st.gpsCourse ?? liveHeading) * Math.PI) / 180;
         const chaseDist = 520;
         const chaseHeight = 310;
         const desiredCamX = playerGroup.position.x - Math.sin(headingRad) * chaseDist;
@@ -2101,9 +2125,9 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         const offZ = camera.position.z - controls.target.z;
         const horizDist = Math.max(80, Math.hypot(offX, offZ));
         const curAzDeg = ((Math.atan2(-offX, offZ) * 180) / Math.PI + 360) % 360;
-        const deltaAz = ((st.compassHeading - curAzDeg + 540) % 360) - 180;
-        if (Math.abs(deltaAz) > 0.5) {
-          const nextAzRad = ((curAzDeg + deltaAz * damp(9.0)) * Math.PI) / 180;
+        const deltaAz = ((liveHeading - curAzDeg + 540) % 360) - 180;
+        if (Math.abs(deltaAz) > 0.2) {
+          const nextAzRad = ((curAzDeg + deltaAz * damp(10.5)) * Math.PI) / 180;
           camera.position.x = controls.target.x - Math.sin(nextAzRad) * horizDist;
           camera.position.z = controls.target.z + Math.cos(nextAzRad) * horizDist;
         }
@@ -2421,6 +2445,10 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     const grp = ctx.overlaysGroup;
     clearAndDisposeGroup(grp);
 
+    // High-Performance 120Hz Draw-Call Batcher: collapses ~370 individual THREE.Line objects
+    // into ~10 merged THREE.LineSegments grouped by (colorHex, opacity) — 35x less WebGL driver overhead!
+    const lineBatches = new Map<string, { colorHex: string; opacity: number; verts: number[] }>();
+
     const addDrapedPolylineClipped = (
       coords: [number, number][],
       colorHex: string,
@@ -2430,32 +2458,58 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     ) => {
       const clippedRuns = clipAndSubdividePolylineToBounds(coords, dataset.bounds, maxStepM);
       if (clippedRuns.length === 0) return;
-      const mat = new THREE.LineBasicMaterial({
-        color: new THREE.Color(colorHex),
-        transparent: opacity < 1,
-        opacity
-      });
+      const key = `${colorHex}|${opacity.toFixed(3)}`;
+      let bucket = lineBatches.get(key);
+      if (!bucket) {
+        bucket = { colorHex, opacity, verts: [] };
+        lineBatches.set(key, bucket);
+      }
+      const verts = bucket.verts;
       for (const run of clippedRuns) {
         if (run.length < 2) continue;
-        const pts: THREE.Vector3[] = [];
-        for (const [lat, lon] of run) {
+        let prevX = 0;
+        let prevY = 0;
+        let prevZ = 0;
+        for (let i = 0; i < run.length; i++) {
+          const [lat, lon] = run[i];
           const ele = sampleDemElevation(dataset.dem, dataset.bounds, lat, lon);
           const [x, y, z] = latLonToWorld3D(lat, lon, ele, dataset.bounds, verticalScale);
-          pts.push(new THREE.Vector3(x, y + liftM, z));
+          const py = y + liftM;
+          if (i > 0) {
+            verts.push(prevX, prevY, prevZ, x, py, z);
+          }
+          prevX = x;
+          prevY = py;
+          prevZ = z;
         }
-        const geo = new THREE.BufferGeometry().setFromPoints(pts);
-        grp.add(new THREE.Line(geo, mat));
       }
+    };
+
+    const appendGeometryTriangles = (geo: THREE.BufferGeometry, targetVerts: number[]) => {
+      const pos = geo.attributes.position;
+      if (!pos) return;
+      const idx = geo.index;
+      if (idx) {
+        for (let i = 0; i < idx.count; i++) {
+          const vi = idx.getX(i);
+          targetVerts.push(pos.getX(vi), pos.getY(vi), pos.getZ(vi));
+        }
+      } else {
+        for (let i = 0; i < pos.count; i++) {
+          targetVerts.push(pos.getX(i), pos.getY(i), pos.getZ(i));
+        }
+      }
+      geo.dispose();
     };
 
     const ov = getMapOverlayPalette(palette);
 
     // Streams in 3D valleys (clipped cleanly to 3D mountain plinth)
     for (const s of dataset.streams) {
-      addDrapedPolylineClipped(s.coords, ov.stream, 3.5, ov.streamOpacity, 18);
+      addDrapedPolylineClipped(s.coords, ov.stream, 3.5, ov.streamOpacity, 22);
     }
 
-    // All 11 Real Lakes & Reservoirs in 3D (Hồ Đá Xanh, Hồ Bên Suối Dinh, Suối Đá pools)
+    // All 11 Real Lakes & Reservoirs merged into ONE single BufferGeometry draw call!
     if (dataset.lakes && dataset.lakes.length > 0) {
       const lakeFillColor =
         palette === 'vivid'
@@ -2474,6 +2528,7 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
               ? '#648F8A'
               : '#4E82A6';
 
+      const mergedLakePositions: number[] = [];
       for (const lake of dataset.lakes) {
         if (!lake.coords || lake.coords.length < 3) continue;
         const ring = lake.coords.slice();
@@ -2484,7 +2539,6 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         }
         if (ring.length < 3) continue;
 
-        // Compute hydro-flattened water surface elevation (25th percentile along shoreline)
         const shoreEles = ring
           .map(([lat, lon]) => sampleDemElevation(dataset.dem, dataset.bounds, lat, lon))
           .sort((a, b) => a - b);
@@ -2498,48 +2552,43 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         }
 
         const faces = THREE.ShapeUtils.triangulateShape(contour2D, []);
-        if (faces.length > 0) {
-          const positions = new Float32Array(contour2D.length * 3);
-          for (let i = 0; i < contour2D.length; i++) {
-            positions[i * 3] = contour2D[i].x;
-            positions[i * 3 + 1] = waterY;
-            positions[i * 3 + 2] = contour2D[i].y;
-          }
-          const idxArr: number[] = [];
-          for (const [a, b, c] of faces) {
-            idxArr.push(a, c, b);
-          }
-          const lakeGeo = new THREE.BufferGeometry();
-          lakeGeo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          lakeGeo.setIndex(idxArr);
-          lakeGeo.computeVertexNormals();
-          const lakeMat = new THREE.MeshStandardMaterial({
-            color: lakeFillColor,
-            roughness: 0.28,
-            metalness: 0.35,
-            transparent: true,
-            opacity: palette === 'vivid' ? 0.82 : 0.72,
-            side: THREE.DoubleSide,
-            polygonOffset: true,
-            polygonOffsetFactor: -2,
-            polygonOffsetUnits: -2
-          });
-          grp.add(new THREE.Mesh(lakeGeo, lakeMat));
+        for (const [a, b, c] of faces) {
+          mergedLakePositions.push(
+            contour2D[a].x, waterY, contour2D[a].y,
+            contour2D[c].x, waterY, contour2D[c].y,
+            contour2D[b].x, waterY, contour2D[b].y
+          );
         }
 
-        // Crisp shoreline contour outline
-        addDrapedPolylineClipped(lake.coords, lakeEdgeHex, 2.2, palette === 'vivid' ? 0.78 : 0.52, 18);
+        // Crisp shoreline contour outline (batched!)
+        addDrapedPolylineClipped(lake.coords, lakeEdgeHex, 2.2, palette === 'vivid' ? 0.78 : 0.52, 22);
+      }
+
+      if (mergedLakePositions.length > 0) {
+        const lakeGeo = new THREE.BufferGeometry();
+        lakeGeo.setAttribute('position', new THREE.Float32BufferAttribute(mergedLakePositions, 3));
+        lakeGeo.computeVertexNormals();
+        const lakeMat = new THREE.MeshLambertMaterial({
+          color: lakeFillColor,
+          transparent: true,
+          opacity: palette === 'vivid' ? 0.84 : 0.76,
+          side: THREE.DoubleSide,
+          polygonOffset: true,
+          polygonOffsetFactor: -2,
+          polygonOffsetUnits: -2
+        });
+        grp.add(new THREE.Mesh(lakeGeo, lakeMat));
       }
     }
 
-    // 220kV High-Voltage Powerline Corridor (clipped to plinth & subdivided every 18m over ridges!)
+    // 220kV High-Voltage Powerline Corridor (batched into 1 LineSegments call!)
     if (dataset.powerlines) {
       for (const pl of dataset.powerlines) {
-        addDrapedPolylineClipped(pl.coords, ov.power, 14.0, ov.powerOpacity, 18);
+        addDrapedPolylineClipped(pl.coords, ov.power, 14.0, ov.powerOpacity, 22);
       }
     }
 
-    // All 281 forest footpaths
+    // All 266 forest footpaths -> batched into 1 SINGLE WebGL draw call!
     if (showAllTrails) {
       const trailCol =
         palette !== 'vivid'
@@ -2552,11 +2601,11 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
       const trailOp = palette !== 'vivid' ? 0.28 : skin === 'tactical' ? 0.38 : 0.45;
       for (const t of dataset.trails) {
         if (t.routes.length > 0) continue; // drawn brighter by routes below
-        addDrapedPolylineClipped(t.coords, trailCol, 4.2, trailOp, 18);
+        addDrapedPolylineClipped(t.coords, trailCol, 4.2, trailOp, 22);
       }
     }
 
-    // 4 Official Color-Coded Routes (Red, Yellow, Blue, Green)
+    // 4 Official Color-Coded Routes (Red, Yellow, Blue, Green -> batched per color!)
     for (const r of dataset.routes) {
       if (visibleRoutes[r.id] === false) continue;
       const routeCol = resolveRouteColor(r.id, r.color, palette);
@@ -2572,7 +2621,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
       addDrapedPolylineClipped(coords, gpx.color, 9.5, 0.9, 18);
     }
 
-    // 3D Force-Field Walls around Military Shooting Range & Deep Quarries
+    // 3D Force-Field Walls around Military Shooting Range & Deep Quarries (merged by wallColor!)
+    const hazardWallBatches = new Map<number, number[]>();
     for (const h of dataset.hazards) {
       const clippedPoly = clipAndSubdividePolygonToBounds(h.coords, dataset.bounds, 45);
       if (clippedPoly.length < 3) continue;
@@ -2585,7 +2635,11 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
             ? ov.hazardHex
             : ov.hazardQuarryHex
           : ov.hazardHex;
-      const positions: number[] = [];
+      let positions = hazardWallBatches.get(wallColor);
+      if (!positions) {
+        positions = [];
+        hazardWallBatches.set(wallColor, positions);
+      }
 
       for (let i = 0; i < clippedPoly.length - 1; i++) {
         const [lat1, lon1] = clippedPoly[i];
@@ -2595,11 +2649,14 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         const [x1, y1, z1] = latLonToWorld3D(lat1, lon1, e1, dataset.bounds, verticalScale);
         const [x2, y2, z2] = latLonToWorld3D(lat2, lon2, e2, dataset.bounds, verticalScale);
 
-        // Two triangles per fence segment
         positions.push(x1, y1, z1, x2, y2, z2, x2, y2 + wallHeight, z2);
         positions.push(x1, y1, z1, x2, y2 + wallHeight, z2, x1, y1 + wallHeight, z1);
       }
 
+      addDrapedPolylineClipped(clippedPoly, wallHex, wallHeight, ov.hazardLineOpacity, 50);
+    }
+    for (const [wallColor, positions] of hazardWallBatches.entries()) {
+      if (positions.length === 0) continue;
       const wallGeo = new THREE.BufferGeometry();
       wallGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
       const wallMat = new THREE.MeshBasicMaterial({
@@ -2610,41 +2667,41 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         depthWrite: false
       });
       grp.add(new THREE.Mesh(wallGeo, wallMat));
-
-      addDrapedPolylineClipped(clippedPoly, wallHex, wallHeight, ov.hazardLineOpacity, 50);
     }
 
-    // Hazard Beacons, Trail Junction Rings & Summit Monuments (draped strictly to DEM surface!)
+    // Flush ALL batched LineSegments (~370 individual lines -> ~10 WebGL draw calls!)
+    for (const bucket of lineBatches.values()) {
+      if (bucket.verts.length < 6) continue;
+      const mergedGeo = new THREE.BufferGeometry();
+      mergedGeo.setAttribute('position', new THREE.Float32BufferAttribute(bucket.verts, 3));
+      const mat = new THREE.LineBasicMaterial({
+        color: new THREE.Color(bucket.colorHex),
+        transparent: bucket.opacity < 1,
+        opacity: bucket.opacity
+      });
+      grp.add(new THREE.LineSegments(mergedGeo, mat));
+    }
+
+    // Hazard Beacons, Trail Junction Rings (merged into 3 shared draw calls!) & Summit Monuments
+    const warnRingVerts: number[] = [];
+    const warnBeamVerts: number[] = [];
+    const juncRingVerts: number[] = [];
     for (const poi of dataset.pois) {
       if (poi.category === 'warning') {
         const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
         const [hx, hy, hz] = latLonToWorld3D(poi.lat, poi.lon, groundEle, dataset.bounds, verticalScale);
-        const ringGeo = createDrapedRingGeometry(poi.lat, poi.lon, 18, 30, 4.5, 24, dataset, verticalScale);
-        const ringMat = new THREE.MeshBasicMaterial({
-          color: ov.warningNum,
-          transparent: true,
-          opacity: palette === 'vivid' ? 0.78 : 0.5,
-          side: THREE.DoubleSide
-        });
-        grp.add(new THREE.Mesh(ringGeo, ringMat));
-
+        appendGeometryTriangles(
+          createDrapedRingGeometry(poi.lat, poi.lon, 18, 30, 4.5, 20, dataset, verticalScale),
+          warnRingVerts
+        );
         const beamGeo = new THREE.CylinderGeometry(1.8, 7, 56, 8);
         beamGeo.translate(hx, hy + 28, hz);
-        const beamMat = new THREE.MeshBasicMaterial({
-          color: ov.warningNum,
-          transparent: true,
-          opacity: palette === 'vivid' ? 0.48 : 0.28
-        });
-        grp.add(new THREE.Mesh(beamGeo, beamMat));
+        appendGeometryTriangles(beamGeo, warnBeamVerts);
       } else if (poi.category === 'junction') {
-        const jRingGeo = createDrapedRingGeometry(poi.lat, poi.lon, 12, 20, 4.8, 20, dataset, verticalScale);
-        const jRingMat = new THREE.MeshBasicMaterial({
-          color: ov.junctionNum,
-          transparent: true,
-          opacity: palette === 'vivid' ? 0.85 : 0.52,
-          side: THREE.DoubleSide
-        });
-        grp.add(new THREE.Mesh(jRingGeo, jRingMat));
+        appendGeometryTriangles(
+          createDrapedRingGeometry(poi.lat, poi.lon, 12, 20, 4.8, 18, dataset, verticalScale),
+          juncRingVerts
+        );
       } else if (poi.id === 'verified-la-ban-helipad') {
         // 3D Tactical Summit Helipad "H" on a solid foundation pedestal + terrain-draped beacon ring at Đỉnh La Bàn (495m)
         const groundEle = sampleDemElevation(dataset.dem, dataset.bounds, poi.lat, poi.lon);
@@ -2668,10 +2725,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
         grp.add(
           new THREE.Mesh(
             pedGeo,
-            new THREE.MeshStandardMaterial({
-              color: 0x111a26,
-              roughness: 0.85,
-              metalness: 0.15
+            new THREE.MeshLambertMaterial({
+              color: 0x111a26
             })
           )
         );
@@ -2760,6 +2815,52 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
           )
         );
       }
+    }
+
+    // Flush merged Warning Rings, Warning Beams & Junction Rings (25 draw calls -> 3!)
+    if (warnRingVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(warnRingVerts, 3));
+      grp.add(
+        new THREE.Mesh(
+          geo,
+          new THREE.MeshBasicMaterial({
+            color: ov.warningNum,
+            transparent: true,
+            opacity: palette === 'vivid' ? 0.78 : 0.5,
+            side: THREE.DoubleSide
+          })
+        )
+      );
+    }
+    if (warnBeamVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(warnBeamVerts, 3));
+      grp.add(
+        new THREE.Mesh(
+          geo,
+          new THREE.MeshBasicMaterial({
+            color: ov.warningNum,
+            transparent: true,
+            opacity: palette === 'vivid' ? 0.48 : 0.28
+          })
+        )
+      );
+    }
+    if (juncRingVerts.length > 0) {
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.Float32BufferAttribute(juncRingVerts, 3));
+      grp.add(
+        new THREE.Mesh(
+          geo,
+          new THREE.MeshBasicMaterial({
+            color: ov.junctionNum,
+            transparent: true,
+            opacity: palette === 'vivid' ? 0.85 : 0.52,
+            side: THREE.DoubleSide
+          })
+        )
+      );
     }
   }, [dataset, verticalScale, visibleRoutes, showAllTrails, importedGpx, skin, palette]);
 
@@ -3054,26 +3155,27 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
     }
 
     const chevronCount = Math.min(28, Math.max(4, Math.floor(totalDist / 48)));
-    const chevrons: THREE.Mesh[] = [];
+    const chGeo = new THREE.BufferGeometry();
+    const verts = new Float32Array([
+      0, 0, -10.5, 8.5, 0, 4.5, 0, 0, -2.0,
+      0, 0, -10.5, 0, 0, -2.0, -8.5, 0, 4.5
+    ]);
+    chGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+    const chMat = new THREE.MeshBasicMaterial({
+      color: ov.gtaHiNum,
+      transparent: true,
+      opacity: 0.95,
+      side: THREE.DoubleSide,
+      depthWrite: false
+    });
+    const chevronMesh = new THREE.InstancedMesh(chGeo, chMat, chevronCount);
+    chevronMesh.frustumCulled = false;
+    const zeroMat = new THREE.Matrix4().makeScale(0, 0, 0);
     for (let i = 0; i < chevronCount; i++) {
-      const chGeo = new THREE.BufferGeometry();
-      const verts = new Float32Array([
-        0, 0, -10.5, 8.5, 0, 4.5, 0, 0, -2.0,
-        0, 0, -10.5, 0, 0, -2.0, -8.5, 0, 4.5
-      ]);
-      chGeo.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-      const chMat = new THREE.MeshBasicMaterial({
-        color: ov.gtaHiNum,
-        transparent: true,
-        opacity: 0.95,
-        side: THREE.DoubleSide,
-        depthWrite: false
-      });
-      const mesh = new THREE.Mesh(chGeo, chMat);
-      mesh.visible = false;
-      grp.add(mesh);
-      chevrons.push(mesh);
+      chevronMesh.setMatrixAt(i, zeroMat);
     }
+    chevronMesh.instanceMatrix.needsUpdate = true;
+    grp.add(chevronMesh);
 
     // Pulsing Tactical Destination Beacon at endpoint
     const destGround = sampleDemElevation(
@@ -3131,7 +3233,8 @@ export const Terrain3DView: React.FC<Terrain3DViewProps> = React.memo(({
       worldPts: flowPts,
       cumDist,
       totalDist,
-      chevrons,
+      chevronMesh,
+      chevronCount,
       destRing,
       destCore
     };

@@ -926,6 +926,8 @@ export const App: React.FC = () => {
     };
 
     const handleAbsoluteOrientation = (ev: DeviceOrientationEvent) => {
+      // Ignore dummy all-zero events fired by desktop browsers without a real magnetometer
+      if ((ev.alpha ?? 0) === 0 && (ev.beta ?? 0) === 0 && (ev.gamma ?? 0) === 0) return;
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.alpha !== null && !Number.isNaN(ev.alpha)) {
         hasAbsolute = true;
@@ -938,13 +940,21 @@ export const App: React.FC = () => {
     };
 
     const handleRelativeOrWebkit = (ev: DeviceOrientationEvent) => {
+      const webkitH = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
+      if (
+        typeof webkitH !== 'number' &&
+        (ev.alpha ?? 0) === 0 &&
+        (ev.beta ?? 0) === 0 &&
+        (ev.gamma ?? 0) === 0
+      ) {
+        return;
+      }
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       // Skip duplicate attitude processing when deviceorientationabsolute already fires on Android
       if (!hasAbsolute && (ev.beta !== null || ev.gamma !== null)) {
         pushFilteredAttitude(ev.beta ?? 0, ev.gamma ?? 0, angle);
       }
 
-      const webkitH = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
       if (typeof webkitH === 'number' && !Number.isNaN(webkitH)) {
         pushFilteredHeading((((webkitH + angle) % 360) + 360) % 360);
       } else if (!hasAbsolute && ev.alpha !== null) {
@@ -1001,19 +1011,16 @@ export const App: React.FC = () => {
     setHeadingUp(next);
     if (navigator.vibrate) navigator.vibrate(15);
     if (next) {
-      if (!isSimMode && !useRealCompassSensor) {
+      // ALWAYS activate phone's real magnetometer when turning on H-UP (even in Test mode!)
+      // so rotating the phone physically rotates the entire 3D & 2D map immediately!
+      if (!useRealCompassSensor && 'DeviceOrientationEvent' in window) {
         void handleToggleRealCompass(true);
-      } else {
-        triggerToast(
-          isSimMode
-            ? '🧭 Đã bật H-UP theo hướng Giả lập (Chỉnh thanh La bàn trong TEST để xoay)'
-            : '🧭 Đang xoay bản đồ theo hướng điện thoại (Heading-Up)'
-        );
       }
+      triggerToast('🧭 Đã bật XOAY BẢN ĐỒ THEO ĐIỆN THOẠI (H-UP) — xoay máy để bản đồ xoay theo!');
     } else {
       triggerToast('⬆️ Đã khóa bản đồ chuẩn hướng Bắc');
     }
-  }, [headingUp, isSimMode, useRealCompassSensor, handleToggleRealCompass, triggerToast]);
+  }, [headingUp, useRealCompassSensor, handleToggleRealCompass, triggerToast]);
 
   // 4. Simulator Walk Engine (Walk along Red Route or toward clicked target!)
   const simDestRef = useRef<{ lat: number; lon: number } | null>(null);
@@ -1909,6 +1916,7 @@ export const App: React.FC = () => {
               playerEle={playerEle}
               playerAccuracy={playerAccuracy}
               compassHeading={compassHeading}
+              liveHeadingRef={smoothHeadingRef}
               gpsCourse={gpsCourse}
               speedMps={speedMps}
               userPins={userPins}
@@ -2107,7 +2115,11 @@ export const App: React.FC = () => {
                   min={0}
                   max={359}
                   value={compassHeading}
-                  onChange={(e) => setCompassHeading(Number(e.target.value))}
+                  onChange={(e) => {
+                    const deg = Number(e.target.value);
+                    smoothHeadingRef.current = deg;
+                    setCompassHeading(deg);
+                  }}
                 />
               </div>
 
@@ -2325,7 +2337,10 @@ export const App: React.FC = () => {
           userPins={userPins}
           hasMagneticWarning={Boolean(magneticWarningReason)}
           magneticWarningReason={magneticWarningReason}
-          onChangeSimHeading={(deg) => setCompassHeading(deg)}
+          onChangeSimHeading={(deg) => {
+            smoothHeadingRef.current = deg;
+            setCompassHeading(deg);
+          }}
           onToggleRealSensor={handleToggleRealCompass}
           onChangeLockedBearing={(deg) => {
             setLockedBearing(deg);
