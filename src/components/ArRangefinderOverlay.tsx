@@ -165,7 +165,8 @@ export const ArRangefinderOverlay: React.FC<ArRangefinderOverlayProps> = ({
           video: {
             facingMode: { ideal: 'environment' },
             width: { ideal: 1280 },
-            height: { ideal: 720 }
+            height: { ideal: 720 },
+            frameRate: { ideal: 60 }
           },
           audio: false
         });
@@ -229,11 +230,22 @@ export const ArRangefinderOverlay: React.FC<ArRangefinderOverlayProps> = ({
     return lockedBaseDistM * Math.abs(Math.tan(radTop) - Math.tan(radBase));
   }, [lockedBaseDistM, lockedBasePitch, lockedTopPitch, effPitch]);
 
-  // 2. 3D DEM Terrain Ray-Marching Rangefinder (Copernicus GLO-30 256x256)
-  const demRange = useMemo(
-    () => raycastDemDistance(dataset, playerLat, playerLon, cal.eyeHeightM, effHeading, effPitch, 5000),
-    [dataset, playerLat, playerLon, cal.eyeHeightM, effHeading, effPitch]
-  );
+  // 2. 3D DEM Terrain Ray-Marching Rangefinder (ONLY runs when in 'dem3d' mode — zero CPU wasted in other modes!)
+  const demRange = useMemo(() => {
+    if (mode !== 'dem3d') {
+      return {
+        hit: false,
+        horizDistM: 0,
+        slantDistM: 0,
+        lat: playerLat,
+        lon: playerLon,
+        targetEle: playerEle,
+        eleDiffM: 0,
+        reason: ''
+      };
+    }
+    return raycastDemDistance(dataset, playerLat, playerLon, cal.eyeHeightM, effHeading, effPitch, 5000);
+  }, [mode, dataset, playerLat, playerLon, playerEle, cal.eyeHeightM, effHeading, effPitch]);
 
   // 3. Stadiametric Optical Caliper Rangefinder
   const stadiaDistM = useMemo(
@@ -245,6 +257,12 @@ export const ArRangefinderOverlay: React.FC<ArRangefinderOverlayProps> = ({
   const arLandmarkTags = useMemo(() => {
     const hFov = cal.vFovDeg * 1.65; // approximate landscape horizontal FOV
     const list: { id: string; label: string; distText: string; xPct: number; yPct: number; isLocked: boolean }[] = [];
+    // Fast early-exit if user is > 9km away from Nui Dinh center (e.g. testing from HCMC/Bien Hoa)
+    const centerLat = (dataset.bounds.north + dataset.bounds.south) * 0.5;
+    const centerLon = (dataset.bounds.east + dataset.bounds.west) * 0.5;
+    if (!lockedTarget && haversineDistanceM(playerLat, playerLon, centerLat, centerLon) > 12000) {
+      return list;
+    }
     const originEle = sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon) + cal.eyeHeightM;
 
     const addItem = (id: string, name: string, lat: number, lon: number, isLocked: boolean) => {

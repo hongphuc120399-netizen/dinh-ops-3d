@@ -61,7 +61,7 @@ interface FloatingCompassWidgetProps {
   onOpenFullCompass: () => void;
 }
 
-export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
+export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = React.memo(({
   compassHeading,
   gpsCourse,
   lockedTarget,
@@ -163,7 +163,7 @@ export const FloatingCompassWidget: React.FC<FloatingCompassWidgetProps> = ({
       </div>
     </button>
   );
-};
+});
 
 interface LeftEdgeDirectionArrowProps {
   compassHeading: number;
@@ -176,7 +176,7 @@ interface LeftEdgeDirectionArrowProps {
   onAlignDirection: () => void;
 }
 
-export const LeftEdgeDirectionArrow: React.FC<LeftEdgeDirectionArrowProps> = ({
+export const LeftEdgeDirectionArrow: React.FC<LeftEdgeDirectionArrowProps> = React.memo(({
   compassHeading,
   gpsCourse,
   headingUp,
@@ -298,7 +298,7 @@ export const LeftEdgeDirectionArrow: React.FC<LeftEdgeDirectionArrowProps> = ({
       </div>
     </button>
   );
-};
+});
 
 interface TacticalCompassTapeProps {
   compassHeading: number;
@@ -321,7 +321,7 @@ const TAPE_CARDINALS: Record<number, string> = {
   315: 'TB'
 };
 
-export const TacticalCompassTape: React.FC<TacticalCompassTapeProps> = ({
+export const TacticalCompassTape: React.FC<TacticalCompassTapeProps> = React.memo(({
   compassHeading,
   gpsCourse,
   lockedTarget,
@@ -404,7 +404,7 @@ export const TacticalCompassTape: React.FC<TacticalCompassTapeProps> = ({
       </div>
     </div>
   );
-};
+});
 
 interface TacticalCompassModalProps {
   dataset: NuiDinhDataset;

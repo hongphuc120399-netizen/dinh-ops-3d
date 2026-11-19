@@ -153,7 +153,7 @@ class VaultGridLayer extends L.GridLayer {
   }
 }
 
-export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
+export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = React.memo(({
   dataset,
   mapStyle,
   visibleRoutes,
@@ -1062,4 +1062,4 @@ export const Hybrid2DMap: React.FC<Hybrid2DMapProps> = ({
       )}
     </div>
   );
-};
+});

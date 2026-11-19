@@ -3,9 +3,11 @@ package vn.nuidinh.tactical3d;
 import android.graphics.Color;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Display;
 import android.view.View;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.WebView;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
@@ -17,6 +19,7 @@ public class MainActivity extends BridgeActivity {
     @SuppressWarnings("deprecation")
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        enableHighRefreshRate120Hz();
         applyImmersiveTacticalFullscreen();
         View decorView = getWindow().getDecorView();
         decorView.post(this::applyImmersiveTacticalFullscreen);
@@ -31,10 +34,51 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onResume() {
         super.onResume();
+        enableHighRefreshRate120Hz();
         applyImmersiveTacticalFullscreen();
         View decorView = getWindow().getDecorView();
         decorView.post(this::applyImmersiveTacticalFullscreen);
         decorView.postDelayed(this::applyImmersiveTacticalFullscreen, 300);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void enableHighRefreshRate120Hz() {
+        Window window = getWindow();
+        if (window == null) {
+            return;
+        }
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Display display = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                    ? getDisplay()
+                    : window.getWindowManager().getDefaultDisplay();
+                if (display != null) {
+                    Display.Mode current = display.getMode();
+                    Display.Mode bestMode = current;
+                    for (Display.Mode m : display.getSupportedModes()) {
+                        if (
+                            m.getPhysicalWidth() == current.getPhysicalWidth() &&
+                            m.getPhysicalHeight() == current.getPhysicalHeight() &&
+                            m.getRefreshRate() > bestMode.getRefreshRate()
+                        ) {
+                            bestMode = m;
+                        }
+                    }
+                    WindowManager.LayoutParams lp = window.getAttributes();
+                    lp.preferredDisplayModeId = bestMode.getModeId();
+                    lp.preferredRefreshRate = bestMode.getRefreshRate();
+                    window.setAttributes(lp);
+                }
+            }
+            if (getBridge() != null) {
+                WebView webView = getBridge().getWebView();
+                if (webView != null) {
+                    webView.setLayerType(View.LAYER_TYPE_HARDWARE, null);
+                }
+            }
+        } catch (Throwable ignored) {
+            // Safely ignore on OEMs restricting display mode selection
+        }
     }
 
     @Override

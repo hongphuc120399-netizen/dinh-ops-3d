@@ -124,6 +124,20 @@ const SIM_PRESETS = [
   { id: 'military', label: '⛔ Sát Trường Bắn (Test Báo Động)', lat: 10.5519, lon: 107.1012 }
 ];
 
+const TacticalClock: React.FC<{ compact?: boolean }> = React.memo(({ compact = false }) => {
+  const [text, setText] = useState<string>(() => formatSpecOpsClock());
+  useEffect(() => {
+    const timer = window.setInterval(() => setText(formatSpecOpsClock()), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  if (compact) return <>{text.slice(0, 5)}</>;
+  return (
+    <span className="tactical-clock-chip" title="Đồng hồ tác chiến 24h">
+      {text}
+    </span>
+  );
+});
+
 export const App: React.FC = () => {
   // View & Layer Controls
   const [viewMode, setViewMode] = useState<ViewMode>('3d');
@@ -241,9 +255,11 @@ export const App: React.FC = () => {
   const [dismissedWarnTitle, setDismissedWarnTitle] = useState<string | null>(null);
   const [dismissedOutGpsHint, setDismissedOutGpsHint] = useState<boolean>(false);
   const [expandedSafety, setExpandedSafety] = useState<boolean>(false);
-  const [clockText, setClockText] = useState<string>(() => formatSpecOpsClock());
   const [isMapDragging, setIsMapDragging] = useState<boolean>(false);
   const [isHudIdle, setIsHudIdle] = useState<boolean>(false);
+  const needAttitudeRef = useRef<boolean>(false);
+  needAttitudeRef.current = showCompassModal || showToolkitModal;
+  const liveAttitudeRef = useRef<{ pitch: number; roll: number }>({ pitch: 0, roll: 0 });
 
   const playerEle = useMemo(
     () => Math.round(sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon)),
@@ -296,15 +312,11 @@ export const App: React.FC = () => {
     };
   }, [forceLandscape]);
 
-  // Real-time 24h Military Clock & Auto-Dim Idle HUD
+  // Auto-Dim Idle HUD (clock isolated in TacticalClock so 1Hz tick never re-renders App!)
   useEffect(() => {
-    const clockTimer = window.setInterval(() => {
-      setClockText(formatSpecOpsClock());
-    }, 1000);
-
     let idleTimer: number | null = null;
     const resetIdle = () => {
-      setIsHudIdle(false);
+      setIsHudIdle((prev) => (prev ? false : prev));
       if (idleTimer !== null) window.clearTimeout(idleTimer);
       idleTimer = window.setTimeout(() => setIsHudIdle(true), 6000);
     };
@@ -312,11 +324,18 @@ export const App: React.FC = () => {
     window.addEventListener('pointerdown', resetIdle, { passive: true });
 
     return () => {
-      window.clearInterval(clockTimer);
       if (idleTimer !== null) window.clearTimeout(idleTimer);
       window.removeEventListener('pointerdown', resetIdle);
     };
   }, []);
+
+  // Sync latest hardware attitude immediately when opening Compass or Toolkit/AR modal
+  useEffect(() => {
+    if (showCompassModal || showToolkitModal) {
+      setPitchDeg(Number(liveAttitudeRef.current.pitch.toFixed(1)));
+      setRollDeg(Number(liveAttitudeRef.current.roll.toFixed(1)));
+    }
+  }, [showCompassModal, showToolkitModal]);
 
   const handleSelectPalette = useCallback(
     (next: TacticalPalette) => {
@@ -824,17 +843,52 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     if (!useRealCompassSensor && isSimMode) {
+      liveAttitudeRef.current = { pitch: 0, roll: 0 };
       setPitchDeg(0);
       setRollDeg(0);
       return;
     }
 
     let hasAbsolute = false;
-    let smoothPitch = 0;
-    let smoothRoll = 0;
+    let smoothPitch = liveAttitudeRef.current.pitch;
+    let smoothRoll = liveAttitudeRef.current.roll;
+    let committedPitch = smoothPitch;
+    let committedRoll = smoothRoll;
     let hasAttitude = false;
+    let pendingRafId = 0;
+    let pendingHeadingCommit: number | null = null;
+    let pendingAttitudeCommit = false;
+
     const getScreenAngle = () =>
       typeof window.screen?.orientation?.angle === 'number' ? window.screen.orientation.angle : 0;
+
+    // Coalesce all high-frequency 60–200Hz hardware sensor events into at most 1 clean vsync commit!
+    const scheduleFlush = () => {
+      if (pendingRafId) return;
+      pendingRafId = window.requestAnimationFrame(() => {
+        pendingRafId = 0;
+        if (pendingHeadingCommit !== null) {
+          const h = pendingHeadingCommit;
+          pendingHeadingCommit = null;
+          setCompassHeading(h);
+        }
+        if (pendingAttitudeCommit && needAttitudeRef.current) {
+          pendingAttitudeCommit = false;
+          const pRounded = Math.round(smoothPitch * 10) / 10;
+          const rRounded = Math.round(smoothRoll * 10) / 10;
+          if (Math.abs(pRounded - committedPitch) >= 0.2) {
+            committedPitch = pRounded;
+            setPitchDeg(pRounded);
+          }
+          if (Math.abs(rRounded - committedRoll) >= 0.25) {
+            committedRoll = rRounded;
+            setRollDeg(rRounded);
+          }
+        } else {
+          pendingAttitudeCommit = false;
+        }
+      });
+    };
 
     const pushFilteredAttitude = (beta: number, gamma: number, screenAngle: number) => {
       const { pitchDeg: rawPitch, rollDeg: rawRoll } = computeCameraAttitude(beta, gamma, screenAngle);
@@ -847,8 +901,13 @@ export const App: React.FC = () => {
         const dRoll = ((rawRoll - smoothRoll + 540) % 360) - 180;
         smoothRoll = ((smoothRoll + dRoll * 0.24 + 540) % 360) - 180;
       }
-      setPitchDeg(smoothPitch);
-      setRollDeg(smoothRoll);
+      liveAttitudeRef.current.pitch = smoothPitch;
+      liveAttitudeRef.current.roll = smoothRoll;
+      // Zero React re-renders on main 3D/2D map screen when neither Compass nor Toolkit/AR is open!
+      if (needAttitudeRef.current) {
+        pendingAttitudeCommit = true;
+        scheduleFlush();
+      }
     };
 
     const pushFilteredHeading = (rawDeg: number) => {
@@ -860,8 +919,9 @@ export const App: React.FC = () => {
       const delta = ((rawDeg - prev + 540) % 360) - 180;
       const next = (prev + delta * 0.16 + 360) % 360;
       smoothHeadingRef.current = next;
-      if (Math.abs(((next - liveCompassRef.current + 540) % 360) - 180) >= 1.8) {
-        setCompassHeading(Math.round(next));
+      if (Math.abs(((next - liveCompassRef.current + 540) % 360) - 180) >= 1.5) {
+        pendingHeadingCommit = Math.round(next);
+        scheduleFlush();
       }
     };
 
@@ -879,7 +939,8 @@ export const App: React.FC = () => {
 
     const handleRelativeOrWebkit = (ev: DeviceOrientationEvent) => {
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
-      if (ev.beta !== null || ev.gamma !== null) {
+      // Skip duplicate attitude processing when deviceorientationabsolute already fires on Android
+      if (!hasAbsolute && (ev.beta !== null || ev.gamma !== null)) {
         pushFilteredAttitude(ev.beta ?? 0, ev.gamma ?? 0, angle);
       }
 
@@ -899,6 +960,7 @@ export const App: React.FC = () => {
     window.addEventListener('deviceorientation', handleRelativeOrWebkit);
 
     return () => {
+      if (pendingRafId) window.cancelAnimationFrame(pendingRafId);
       window.removeEventListener(
         'deviceorientationabsolute' as keyof WindowEventMap,
         handleAbsoluteOrientation as EventListener
@@ -1308,6 +1370,20 @@ export const App: React.FC = () => {
     triggerToast('👣 Đã bật chế độ Đi Ngược Dấu Chân về điểm xuất phát!');
   }, [trackPoints, triggerFlyTo, triggerToast]);
 
+  const handleSelectTarget = useCallback(
+    (t: TacticalTarget) => {
+      setActiveRoute(null);
+      stopSimWalks();
+      setLockedTarget(t);
+      triggerToast(`🎯 Đã khóa mục tiêu: ${t.name}`);
+    },
+    [stopSimWalks, triggerToast]
+  );
+
+  const handleRequestPinAt = useCallback((lat: number, lon: number, ele: number) => {
+    setPendingPinCoords({ lat, lon, ele });
+  }, []);
+
   return (
     <div
       data-palette={palette}
@@ -1340,9 +1416,7 @@ export const App: React.FC = () => {
               {availableOta ? `OTA ${availableOta.version}!` : `v${APP_BUILD_INFO.version}`}
             </button>
 
-            <span className="tactical-clock-chip" title="Đồng hồ tác chiến 24h">
-              {clockText}
-            </span>
+            <TacticalClock />
 
             {!zenMode && (
               <>
@@ -1847,17 +1921,13 @@ export const App: React.FC = () => {
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
               palette={palette}
+              isSuspended={showToolkitModal || showCompassModal}
               onToggleHeadingUp={handleToggleHeadingUp}
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
-              onSelectTarget={(t) => {
-                setActiveRoute(null);
-                stopSimWalks();
-                setLockedTarget(t);
-                triggerToast(`🎯 Đã khóa mục tiêu: ${t.name}`);
-              }}
+              onSelectTarget={handleSelectTarget}
               onSelectUserPin={handleSelectUserPin}
-              onRequestPinAt={(lat, lon, ele) => setPendingPinCoords({ lat, lon, ele })}
+              onRequestPinAt={handleRequestPinAt}
               onSimMoveTo={handleSimMoveTo}
               onStartGtaRoute={handleStartGtaRoute}
             />
@@ -1891,14 +1961,9 @@ export const App: React.FC = () => {
               onToggleHeadingUp={handleToggleHeadingUp}
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
-              onSelectTarget={(t) => {
-                setActiveRoute(null);
-                stopSimWalks();
-                setLockedTarget(t);
-                triggerToast(`🎯 Đã khóa mục tiêu: ${t.name}`);
-              }}
+              onSelectTarget={handleSelectTarget}
               onSelectUserPin={handleSelectUserPin}
-              onRequestPinAt={(lat, lon, ele) => setPendingPinCoords({ lat, lon, ele })}
+              onRequestPinAt={handleRequestPinAt}
               onSimMoveTo={handleSimMoveTo}
               onStartGtaRoute={handleStartGtaRoute}
             />
@@ -2094,7 +2159,7 @@ export const App: React.FC = () => {
         {zenMode ? (
           <>
             <span className="zen-tele-readout">
-              {clockText.slice(0, 5)} •{' '}
+              <TacticalClock compact /> •{' '}
               {String(((Math.round(compassHeading) % 360) + 360) % 360).padStart(3, '0')}°
             </span>
             <button
