@@ -60,6 +60,15 @@ import {
   TacticalCompassModal,
   TacticalCompassTape
 } from './components/CompassSystem';
+import {
+  createInitialMissionState,
+  ExpeditionEnduranceHud,
+  loadSavedMissionState,
+  MissionStartModal,
+  saveMissionState,
+  type ClimbIntensity,
+  type MissionSessionState
+} from './components/ExpeditionEnduranceSystem';
 
 const dataset = rawDataset as unknown as NuiDinhDataset;
 
@@ -176,10 +185,20 @@ export const App: React.FC = () => {
   });
   const [showLayerPopover, setShowLayerPopover] = useState(false);
 
-  // GPS & Sensor State
-  const [isSimMode, setIsSimMode] = useState<boolean>(() =>
-    typeof window !== 'undefined' ? localStorage.getItem('dinh_gps_real_mode_v1') !== '1' : true
+  // Live Real-Climb Expedition Mode ("▶ BẮT ĐẦU" — hides all Test/Sim UI & runs hydration/rest endurance timers!)
+  const [missionSession, setMissionSession] = useState<MissionSessionState | null>(() =>
+    typeof window !== 'undefined' ? loadSavedMissionState() : null
   );
+  const missionActive = Boolean(missionSession?.active);
+  const [showMissionStartModal, setShowMissionStartModal] = useState<boolean>(false);
+  const [showMissionDash, setShowMissionDash] = useState<boolean>(false);
+
+  // GPS & Sensor State (forces real hardware GPS immediately if live mission is active!)
+  const [isSimMode, setIsSimMode] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    if (loadSavedMissionState()?.active) return false;
+    return localStorage.getItem('dinh_gps_real_mode_v1') !== '1';
+  });
   const [simAutoWalk, setSimAutoWalk] = useState<boolean>(false);
   const [simDrawerOpen, setSimDrawerOpen] = useState<boolean>(false);
   const [playerLat, setPlayerLat] = useState<number>(10.531285); // Start at Chua Hang To on Red Route!
@@ -1391,6 +1410,50 @@ export const App: React.FC = () => {
     setPendingPinCoords({ lat, lon, ele });
   }, []);
 
+  const handleUpdateMission = useCallback((updater: (prev: MissionSessionState) => MissionSessionState) => {
+    setMissionSession((prev) => {
+      if (!prev) return prev;
+      const next = updater(prev);
+      saveMissionState(next);
+      return next;
+    });
+  }, []);
+
+  const handleConfirmStartMission = useCallback(
+    (intensity: ClimbIntensity, waterTotalMl: number, clearOldTrack: boolean) => {
+      stopSimWalks();
+      setSimAutoWalk(false);
+      setSimDrawerOpen(false);
+      setDismissedOutGpsHint(false);
+      setIsSimMode(false);
+      setIsRecordingTrack(true);
+      if (clearOldTrack) {
+        setTrackPoints([]);
+      }
+      if ('DeviceOrientationEvent' in window) {
+        void handleToggleRealCompass(true);
+      }
+      const nextSession = createInitialMissionState(intensity, waterTotalMl, playerEle);
+      saveMissionState(nextSession);
+      setMissionSession(nextSession);
+      setShowMissionStartModal(false);
+      if (navigator.vibrate) navigator.vibrate([40, 50, 80]);
+      triggerToast('🚀 ĐÃ BẮT ĐẦU LEO THẬT! Đã ẩn chế độ Test • GPS & Đồng hồ tiếp nước/nghỉ đã chạy.');
+    },
+    [stopSimWalks, handleToggleRealCompass, playerEle, triggerToast]
+  );
+
+  const handleEndMission = useCallback(() => {
+    saveMissionState(null);
+    setMissionSession(null);
+    setShowMissionDash(false);
+    triggerToast('🏁 Đã kết thúc chuyến leo thực địa!');
+  }, [triggerToast]);
+
+  const handleRefreshGpsNow = useCallback(() => {
+    manualGpsRefreshRef.current?.();
+  }, []);
+
   return (
     <div
       data-palette={palette}
@@ -1534,6 +1597,25 @@ export const App: React.FC = () => {
 
         {/* CENTERED NARROW SUB-PILLS (Only shown when active) */}
         <div className="hud-sub-pills">
+          {missionSession?.active && (
+            <ExpeditionEnduranceHud
+              mission={missionSession}
+              dataset={dataset}
+              playerLat={playerLat}
+              playerLon={playerLon}
+              playerEle={playerEle}
+              playerAccuracy={playerAccuracy}
+              totalTrackDistanceM={totalTrackDistanceM}
+              zenMode={zenMode}
+              showDashboard={showMissionDash}
+              onUpdateMission={handleUpdateMission}
+              onToggleDashboard={setShowMissionDash}
+              onNavigateToWater={handleStartGtaRoute}
+              onRefreshGps={handleRefreshGpsNow}
+              onEndMission={handleEndMission}
+              onToast={triggerToast}
+            />
+          )}
           {nativeApkVer && isRemoteNewer('1.0.6', nativeApkVer) && !dismissedApkNudge && (
             <div className="ota-quick-pill apk-nudge-pill">
               <a
@@ -1929,7 +2011,7 @@ export const App: React.FC = () => {
               syntheticLandscape={syntheticLandscape}
               headingUp={headingUp}
               palette={palette}
-              isSuspended={showToolkitModal || showCompassModal}
+              isSuspended={showToolkitModal || showCompassModal || showMissionStartModal || showMissionDash}
               onToggleHeadingUp={handleToggleHeadingUp}
               onMapInteractionChange={setIsMapDragging}
               flyToTrigger={flyToTrigger}
@@ -2011,8 +2093,8 @@ export const App: React.FC = () => {
         </>
       )}
 
-      {/* INTERACTIVE FIELD SIMULATOR CONTROL BAR (For Testing on Web before going to Nui Dinh!) */}
-      {simDrawerOpen && (
+      {/* INTERACTIVE FIELD SIMULATOR CONTROL BAR (100% hidden while Real Climb Mission is active!) */}
+      {simDrawerOpen && !missionActive && (
         <div className="sim-floating-drawer">
           <div className="sim-drawer-top">
             <div>
@@ -2223,18 +2305,45 @@ export const App: React.FC = () => {
               <span className="dock-lbl">CÔNG CỤ</span>
             </button>
 
-            <button
-              type="button"
-              className={`dock-btn ${simDrawerOpen || !isSimMode ? 'gps-live' : ''}`}
-              onClick={() => setSimDrawerOpen((v) => !v)}
-            >
-              <span className="dock-lbl">{isSimMode ? 'TEST' : 'GPS'}</span>
-            </button>
+            {missionActive ? (
+              <button
+                type="button"
+                className={`dock-btn mission-live-btn ${showMissionDash ? 'active' : ''}`}
+                onClick={() => setShowMissionDash(true)}
+              >
+                <span className="dock-lbl">💧 SỨC BỀN</span>
+              </button>
+            ) : (
+              <>
+                <button
+                  type="button"
+                  className="dock-btn mission-start-btn"
+                  onClick={() => setShowMissionStartModal(true)}
+                  title="Bắt đầu leo Núi Dinh thật — ẩn mọi công cụ Test & bật đồng hồ tiếp nước, nghỉ phục hồi"
+                >
+                  <span className="dock-lbl">▶ BẮT ĐẦU</span>
+                </button>
+
+                <button
+                  type="button"
+                  className={`dock-btn ${simDrawerOpen || !isSimMode ? 'gps-live' : ''}`}
+                  onClick={() => setSimDrawerOpen((v) => !v)}
+                >
+                  <span className="dock-lbl">{isSimMode ? 'TEST' : 'GPS'}</span>
+                </button>
+              </>
+            )}
           </>
         )}
       </nav>
 
       {/* MODALS & SHEETS */}
+      {showMissionStartModal && !missionActive && (
+        <MissionStartModal
+          onConfirmStart={handleConfirmStartMission}
+          onClose={() => setShowMissionStartModal(false)}
+        />
+      )}
       {pendingPinCoords && (
         <QuickPinModal
           lat={pendingPinCoords.lat}
@@ -2331,6 +2440,7 @@ export const App: React.FC = () => {
           pitchDeg={pitchDeg}
           rollDeg={rollDeg}
           useRealSensor={useRealCompassSensor || !isSimMode}
+          hideSimControls={missionActive}
           sensorSupported={'DeviceOrientationEvent' in window}
           lockedBearing={lockedBearing}
           lockedTarget={lockedTarget}

@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.1.12',
-  buildNumber: 202611191038,
-  builtAt: '2026-11-19T10:38:20+07:00',
-  note: "Gộp batch 430 draw-call 3D xuống ~24 draw-call cho 120Hz siêu mượt (tắt MSAA nặng di động, InstancedMesh mũi tên GTA) & bật xoay toàn bộ bản đồ H-UP theo la bàn điện thoại 120Hz cả trong chế độ TEST"
+  version: '1.1.13',
+  buildNumber: 202611191440,
+  builtAt: '2026-11-19T14:40:20+07:00',
+  note: "Thêm nút BẮT ĐẦU leo thật: ẩn toàn bộ chế độ Test, khóa GPS/La bàn thật, tự tính lịch tiếp nước + nghỉ phục hồi và đồng hồ đếm ngược nghỉ đủ độ bền"
 };

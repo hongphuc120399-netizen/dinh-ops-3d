@@ -417,6 +417,7 @@ interface TacticalCompassModalProps {
   pitchDeg: number;
   rollDeg: number;
   useRealSensor: boolean;
+  hideSimControls?: boolean;
   sensorSupported: boolean;
   lockedBearing: number | null;
   lockedTarget: TacticalTarget | null;
@@ -442,6 +443,7 @@ export const TacticalCompassModal: React.FC<TacticalCompassModalProps> = ({
   pitchDeg,
   rollDeg,
   useRealSensor,
+  hideSimControls = false,
   lockedBearing,
   lockedTarget,
   userPins,
@@ -654,23 +656,25 @@ export const TacticalCompassModal: React.FC<TacticalCompassModalProps> = ({
           </button>
         </div>
 
-        {/* Sensor Source Switcher */}
-        <div className="compass-sensor-toggle">
-          <button
-            type="button"
-            className={!useRealSensor ? 'active' : ''}
-            onClick={() => onToggleRealSensor(false)}
-          >
-            🎛️ Xoay Tay Trên Web (Kéo mặt la bàn)
-          </button>
-          <button
-            type="button"
-            className={useRealSensor ? 'active' : ''}
-            onClick={() => onToggleRealSensor(true)}
-          >
-            🧭 Cảm Biến Từ Kế Thật (Điện thoại)
-          </button>
-        </div>
+        {/* Sensor Source Switcher (Hidden during Live Real Climb Mission) */}
+        {!hideSimControls && (
+          <div className="compass-sensor-toggle">
+            <button
+              type="button"
+              className={!useRealSensor ? 'active' : ''}
+              onClick={() => onToggleRealSensor(false)}
+            >
+              🎛️ Xoay Tay Trên Web (Kéo mặt la bàn)
+            </button>
+            <button
+              type="button"
+              className={useRealSensor ? 'active' : ''}
+              onClick={() => onToggleRealSensor(true)}
+            >
+              🧭 Cảm Biến Từ Kế Thật (Điện thoại)
+            </button>
+          </div>
+        )}
 
         {/* Magnetic Interference Alert (220kV Powerline or Compass vs GPS Drift) */}
         {hasMagneticWarning && magneticWarningReason && (
