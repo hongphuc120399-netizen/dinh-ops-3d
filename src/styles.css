@@ -2471,7 +2471,8 @@ select {
 }
 .app-shell.synthetic-landscape .sheet-backdrop,
 .app-shell.synthetic-landscape .popover-click-catcher,
-.app-shell.synthetic-landscape .photo-lightbox {
+.app-shell.synthetic-landscape .photo-lightbox,
+.app-shell.synthetic-landscape .ar-fullscreen-overlay {
   position: absolute;
   inset: 0;
 }
@@ -3850,4 +3851,702 @@ select {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+
+/* ============================================================================
+   FULLSCREEN LANDSCAPE AR RANGEFINDER COCKPIT (v1.1.10)
+   ============================================================================ */
+.sheet-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ar-launch-pill {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(200, 162, 90, 0.24), rgba(56, 189, 248, 0.2));
+  border: 1px solid rgba(200, 162, 90, 0.65);
+  color: #fef08a;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ar-launch-pill:active {
+  transform: scale(0.96);
+}
+
+.ar-fullscreen-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2600;
+  background: #04070d;
+  color: #f8fafc;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.ar-fs-video-stage {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  container-type: size;
+  background:
+    radial-gradient(circle at 50% 44%, rgba(30, 58, 95, 0.32), transparent 62%),
+    linear-gradient(180deg, #09121e 0%, #050911 55%, #0c1412 100%);
+}
+
+.ar-fs-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.ar-fs-video.is-rot-90,
+.ar-fs-video.is-rot-neg90 {
+  inset: auto;
+  left: 50%;
+  top: 50%;
+  width: 100cqh;
+  height: 100cqw;
+  object-fit: cover;
+}
+
+.ar-fs-video.is-rot-90 {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.ar-fs-video.is-rot-neg90 {
+  transform: translate(-50%, -50%) rotate(-90deg);
+}
+
+.ar-fs-vignette {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, transparent 46%, rgba(2, 6, 14, 0.58) 100%);
+}
+
+/* Top Slim Landscape Telemetry Bar */
+.ar-fs-topbar {
+  position: relative;
+  z-index: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px max(10px, env(safe-area-inset-right)) 5px max(10px, env(safe-area-inset-left));
+  background: linear-gradient(180deg, rgba(4, 8, 16, 0.88), rgba(4, 8, 16, 0.58));
+  border-bottom: 1px solid rgba(148, 163, 184, 0.24);
+  backdrop-filter: blur(8px);
+  flex-shrink: 0;
+}
+
+.ar-fs-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  color: #cbd5e1;
+  white-space: nowrap;
+}
+
+.ar-fs-metrics strong {
+  color: #f8fafc;
+  font-size: 0.78rem;
+}
+
+.ar-fs-metrics .ar-ok-txt strong {
+  color: #4ade80;
+}
+
+.ar-fs-metrics .ar-warn-txt strong {
+  color: #fbbf24;
+}
+
+.ar-fs-acc-pill {
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 0.69rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42%;
+}
+
+.ar-fs-acc-pill.level-ok {
+  background: rgba(22, 163, 74, 0.24);
+  border: 1px solid rgba(74, 222, 128, 0.58);
+  color: #bbf7d0;
+}
+
+.ar-fs-acc-pill.level-warn {
+  background: rgba(217, 119, 6, 0.26);
+  border: 1px solid rgba(251, 191, 36, 0.6);
+  color: #fde68a;
+}
+
+.ar-fs-acc-pill.level-bad {
+  background: rgba(220, 38, 38, 0.28);
+  border: 1px solid rgba(248, 113, 113, 0.62);
+  color: #fecaca;
+}
+
+.ar-fs-top-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.ar-mini-btn,
+.ar-close-btn {
+  padding: 5px 9px;
+  border-radius: 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.ar-mini-btn {
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  color: #e2e8f0;
+}
+
+.ar-close-btn {
+  background: rgba(185, 28, 28, 0.72);
+  border: 1px solid rgba(248, 113, 113, 0.65);
+  color: #fff;
+}
+
+/* 3-Column Landscape Cockpit */
+.ar-fs-body {
+  position: relative;
+  z-index: 3;
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) 148px;
+}
+
+.ar-fs-left-rail,
+.ar-fs-right-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  background: rgba(4, 9, 17, 0.62);
+  backdrop-filter: blur(8px);
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.ar-fs-left-rail {
+  padding-left: max(8px, env(safe-area-inset-left));
+  border-right: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.ar-fs-right-rail {
+  padding-right: max(8px, env(safe-area-inset-right));
+  border-left: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.ar-mode-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.74);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  color: #cbd5e1;
+  text-align: left;
+  cursor: pointer;
+  flex: 1 1 0;
+  min-height: 48px;
+}
+
+.ar-mode-btn strong {
+  font-size: 0.75rem;
+  color: #f8fafc;
+  line-height: 1.15;
+}
+
+.ar-mode-btn small {
+  font-size: 0.62rem;
+  color: #94a3b8;
+  line-height: 1.15;
+}
+
+.ar-mode-btn.active {
+  background: linear-gradient(135deg, rgba(200, 162, 90, 0.28), rgba(56, 189, 248, 0.2));
+  border-color: rgba(255, 214, 10, 0.78);
+  box-shadow: 0 0 12px rgba(255, 214, 10, 0.18);
+}
+
+.ar-mode-btn.active strong {
+  color: #fef08a;
+}
+
+.ar-mode-btn.active small {
+  color: #e2e8f0;
+}
+
+/* Open Center Optics Stage */
+.ar-fs-center {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  padding: 8px 10px 10px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.ar-fs-reticle {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+.ar-fs-toast {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  max-width: 92%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.88);
+  border: 1px solid rgba(74, 222, 128, 0.55);
+  color: #dcfce7;
+  font-size: 0.72rem;
+  font-weight: 600;
+  text-align: center;
+  backdrop-filter: blur(8px);
+  pointer-events: auto;
+}
+
+.ar-fs-toast.is-err {
+  border-color: rgba(251, 191, 36, 0.65);
+  color: #fef3c7;
+}
+
+.ar-poi-tag {
+  position: absolute;
+  z-index: 4;
+  transform: translate(-50%, -100%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 7px;
+  border-radius: 7px;
+  background: rgba(6, 12, 22, 0.76);
+  border: 1px solid rgba(56, 189, 248, 0.58);
+  color: #e0f2fe;
+  font-size: 0.65rem;
+  white-space: nowrap;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+.ar-poi-tag strong {
+  color: #7dd3fc;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.ar-poi-tag.is-locked {
+  border-color: rgba(255, 214, 10, 0.9);
+  background: rgba(30, 22, 6, 0.84);
+  color: #fef08a;
+}
+
+.ar-poi-tag.is-locked strong {
+  color: #fde047;
+}
+
+.ar-fs-readout-pill {
+  position: relative;
+  z-index: 5;
+  width: min(500px, 96%);
+  padding: 7px 14px;
+  border-radius: 14px;
+  background: rgba(4, 9, 17, 0.76);
+  border: 1px solid rgba(200, 162, 90, 0.52);
+  backdrop-filter: blur(10px);
+  text-align: center;
+  pointer-events: auto;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.ar-readout-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 0.84rem;
+  color: #e2e8f0;
+}
+
+.ar-readout-main strong {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 1.06rem;
+  color: #ffd60a;
+}
+
+.ar-readout-err {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.76rem;
+  color: #93c5fd;
+  font-weight: 700;
+}
+
+.ar-readout-sep {
+  color: #64748b;
+}
+
+.ar-readout-hint {
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #fde68a;
+}
+
+.ar-readout-sub {
+  margin-top: 2px;
+  font-size: 0.67rem;
+  color: #cbd5e1;
+  line-height: 1.25;
+}
+
+.ar-cal-center-card {
+  position: relative;
+  z-index: 5;
+  width: min(520px, 96%);
+  max-height: 44%;
+  overflow-y: auto;
+  padding: 7px 11px;
+  border-radius: 12px;
+  background: rgba(6, 12, 24, 0.84);
+  border: 1px solid rgba(56, 189, 248, 0.48);
+  backdrop-filter: blur(10px);
+  pointer-events: auto;
+  font-size: 0.68rem;
+  line-height: 1.32;
+  color: #e2e8f0;
+  margin-top: auto;
+}
+
+.ar-cal-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.ar-cal-live-pill {
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: rgba(255, 214, 10, 0.16);
+  border: 1px solid rgba(255, 214, 10, 0.5);
+  color: #fef08a;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.67rem;
+}
+
+.ar-cal-center-card strong {
+  color: #fef08a;
+}
+
+.ar-cal-center-card ol {
+  margin: 4px 0 5px;
+  padding-left: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.ar-cal-center-card code {
+  padding: 0 4px;
+  border-radius: 4px;
+  background: rgba(255, 214, 10, 0.2);
+  color: #fef08a;
+}
+
+.ar-cal-summary {
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.86);
+  border: 1px solid rgba(148, 163, 184, 0.24);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.69rem;
+  color: #bae6fd;
+}
+
+.ar-sim-strip {
+  position: relative;
+  z-index: 5;
+  width: min(470px, 96%);
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  padding: 5px 10px;
+  border-radius: 10px;
+  background: rgba(7, 12, 22, 0.78);
+  border: 1px dashed rgba(251, 191, 36, 0.48);
+  pointer-events: auto;
+}
+
+.ar-sim-strip label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 0.65rem;
+  color: #fde68a;
+}
+
+.ar-sim-strip input[type='range'] {
+  width: 100%;
+  accent-color: #ffd60a;
+}
+
+/* Right Rail Buttons & Controls */
+.ar-act-btn {
+  width: 100%;
+  padding: 9px 8px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.34);
+  color: #f1f5f9;
+  font-size: 0.74rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-align: center;
+  line-height: 1.2;
+}
+
+.ar-act-btn:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.ar-act-btn.primary {
+  background: linear-gradient(135deg, rgba(200, 162, 90, 0.92), rgba(168, 122, 46, 0.92));
+  border-color: #fef08a;
+  color: #090d16;
+  font-weight: 800;
+}
+
+.ar-act-btn.accent {
+  background: rgba(14, 116, 144, 0.84);
+  border-color: #7dd3fc;
+  color: #f0f9ff;
+}
+
+.ar-stadia-presets {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+}
+
+.ar-stadia-presets button {
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #cbd5e1;
+  font-size: 0.64rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ar-stadia-presets button.active {
+  background: rgba(56, 189, 248, 0.26);
+  border-color: #38bdf8;
+  color: #e0f2fe;
+}
+
+.ar-stadia-slider-box {
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(56, 189, 248, 0.32);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.66rem;
+  color: #bae6fd;
+}
+
+.ar-stadia-slider-box input[type='range'] {
+  width: 100%;
+  accent-color: #38bdf8;
+}
+
+.ar-stepper-row {
+  display: grid;
+  grid-template-columns: 32px 1fr 32px;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 9px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.3);
+  text-align: center;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: #fef08a;
+}
+
+.ar-stepper-row button {
+  height: 28px;
+  border-radius: 7px;
+  background: rgba(30, 41, 59, 0.92);
+  border: 1px solid rgba(148, 163, 184, 0.32);
+  color: #f8fafc;
+  font-size: 0.9rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.ar-fs-hw-row {
+  margin-top: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+  padding-top: 6px;
+  border-top: 1px dashed rgba(148, 163, 184, 0.24);
+}
+
+.ar-fs-hw-row button {
+  padding: 6px 4px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  color: #94a3b8;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.ar-fs-hw-row button.active {
+  background: rgba(22, 163, 74, 0.24);
+  border-color: rgba(74, 222, 128, 0.6);
+  color: #bbf7d0;
+}
+
+/* Short landscape phones (340px - 430px tall) */
+@media (max-height: 430px) {
+  .ar-fs-topbar {
+    padding-top: 4px;
+    padding-bottom: 4px;
+  }
+  .ar-fs-body {
+    grid-template-columns: 108px minmax(0, 1fr) 136px;
+  }
+  .ar-fs-left-rail,
+  .ar-fs-right-rail {
+    padding: 5px 6px;
+    gap: 4px;
+  }
+  .ar-mode-btn {
+    padding: 5px 7px;
+    min-height: 40px;
+  }
+  .ar-act-btn {
+    padding: 7px 6px;
+    font-size: 0.7rem;
+  }
+  .ar-fs-readout-pill {
+    padding: 5px 10px;
+  }
+  .ar-readout-main strong {
+    font-size: 0.96rem;
+  }
+  .ar-hide-sm {
+    display: none;
+  }
+}
+
+/* Fallback ONLY when user explicitly disabled Force Landscape and opens on narrow portrait screen */
+@media (max-width: 560px) and (orientation: portrait) {
+  .app-shell:not(.synthetic-landscape) .ar-fs-body {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-fs-left-rail {
+    flex-direction: row;
+    border-right: none;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+    padding: 5px 6px;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-mode-btn {
+    min-height: 38px;
+    align-items: center;
+    text-align: center;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-mode-btn small {
+    display: none;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-fs-right-rail {
+    border-left: none;
+    border-top: 1px solid rgba(148, 163, 184, 0.2);
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-act-btn {
+    flex: 1 1 42%;
+  }
+  .app-shell:not(.synthetic-landscape) .ar-fs-hw-row {
+    width: 100%;
+    margin-top: 2px;
+  }
+}
+
+/* Compact sizing inside synthetic-landscape (rotated portrait phone ~360-430px tall) */
+.app-shell.synthetic-landscape .ar-fs-body {
+  grid-template-columns: 108px minmax(0, 1fr) 136px;
+}
+.app-shell.synthetic-landscape .ar-fs-left-rail,
+.app-shell.synthetic-landscape .ar-fs-right-rail {
+  padding: 5px 6px;
+  gap: 4px;
+}
+.app-shell.synthetic-landscape .ar-mode-btn {
+  padding: 5px 7px;
+  min-height: 40px;
+}
+.app-shell.synthetic-landscape .ar-act-btn {
+  padding: 7px 6px;
+  font-size: 0.7rem;
+}
+.app-shell.synthetic-landscape .ar-hide-sm {
+  display: none;
 }

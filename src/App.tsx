@@ -18,6 +18,7 @@ import type {
 } from './types';
 import {
   computeBearingDeg,
+  computeCameraAttitude,
   computeTacticalTrailRoute,
   evaluateSafetyAlerts,
   formatBearingCardinal,
@@ -829,15 +830,25 @@ export const App: React.FC = () => {
     }
 
     let hasAbsolute = false;
+    let smoothPitch = 0;
+    let smoothRoll = 0;
+    let hasAttitude = false;
     const getScreenAngle = () =>
       typeof window.screen?.orientation?.angle === 'number' ? window.screen.orientation.angle : 0;
 
-    const remapTiltForOrientation = (beta: number, gamma: number, screenAngle: number) => {
-      const normalized = ((Math.round(screenAngle / 90) * 90) % 360 + 360) % 360;
-      if (normalized === 90) return { pitch: gamma, roll: -beta };
-      if (normalized === 270) return { pitch: -gamma, roll: beta };
-      if (normalized === 180) return { pitch: -beta, roll: -gamma };
-      return { pitch: beta, roll: gamma };
+    const pushFilteredAttitude = (beta: number, gamma: number, screenAngle: number) => {
+      const { pitchDeg: rawPitch, rollDeg: rawRoll } = computeCameraAttitude(beta, gamma, screenAngle);
+      if (!hasAttitude) {
+        smoothPitch = rawPitch;
+        smoothRoll = rawRoll;
+        hasAttitude = true;
+      } else {
+        smoothPitch += (rawPitch - smoothPitch) * 0.24;
+        const dRoll = ((rawRoll - smoothRoll + 540) % 360) - 180;
+        smoothRoll = ((smoothRoll + dRoll * 0.24 + 540) % 360) - 180;
+      }
+      setPitchDeg(smoothPitch);
+      setRollDeg(smoothRoll);
     };
 
     const pushFilteredHeading = (rawDeg: number) => {
@@ -862,18 +873,14 @@ export const App: React.FC = () => {
         pushFilteredHeading(tilted);
       }
       if (ev.beta !== null || ev.gamma !== null) {
-        const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
-        setPitchDeg(pitch);
-        setRollDeg(roll);
+        pushFilteredAttitude(ev.beta ?? 0, ev.gamma ?? 0, angle);
       }
     };
 
     const handleRelativeOrWebkit = (ev: DeviceOrientationEvent) => {
       const angle = syntheticLandscapeRef.current ? 90 : getScreenAngle();
       if (ev.beta !== null || ev.gamma !== null) {
-        const { pitch, roll } = remapTiltForOrientation(ev.beta ?? 0, ev.gamma ?? 0, angle);
-        setPitchDeg(pitch);
-        setRollDeg(roll);
+        pushFilteredAttitude(ev.beta ?? 0, ev.gamma ?? 0, angle);
       }
 
       const webkitH = (ev as unknown as { webkitCompassHeading?: number }).webkitCompassHeading;
@@ -2194,6 +2201,7 @@ export const App: React.FC = () => {
           initialApkUrl={apkReleaseUrl}
           playerLat={playerLat}
           playerLon={playerLon}
+          playerAccuracy={playerAccuracy}
           compassHeading={compassHeading}
           pitchDeg={pitchDeg}
           rollDeg={rollDeg}

@@ -1,10 +1,9 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { NuiDinhDataset, PoiItem, TacticalTarget, UserPin } from '../types';
 import {
-  computeBearingDeg,
   formatBearingCardinal,
   formatDistance,
-  haversineDistanceM,
   intersectTwoBearings,
   intersectTwoCircles,
   parseFlexibleCoordinateInput,
@@ -12,6 +11,7 @@ import {
   sampleDemElevation,
   wgs84MetersPerDeg
 } from '../utils/geoMath';
+import { ArRangefinderOverlay, type ArCaptureSlot } from './ArRangefinderOverlay';
 
 export interface PinRequestPayload {
   lat: number;
@@ -25,6 +25,7 @@ interface TacticalSightingPanelProps {
   dataset: NuiDinhDataset;
   playerLat: number;
   playerLon: number;
+  playerAccuracy?: number | null;
   compassHeading: number;
   pitchDeg?: number;
   rollDeg?: number;
@@ -104,6 +105,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   dataset,
   playerLat,
   playerLon,
+  playerAccuracy = null,
   compassHeading,
   pitchDeg = 0,
   rollDeg = 0,
@@ -157,21 +159,10 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
   );
   const [projDistM, setProjDistM] = useState<string>('350');
 
-  // Inline AR Camera Sighting Drawer (no tab switching required!)
-  const [showArDrawer, setShowArDrawer] = useState<boolean>(false);
-  const [arTargetSlot, setArTargetSlot] = useState<'A' | 'B' | 'proj' | 'free'>('free');
-  const [arCamActive, setArCamActive] = useState<boolean>(false);
-  const [arCamError, setArCamError] = useState<string | null>(null);
+  // Fullscreen Landscape AR Rangefinder Overlay State
+  const [fullscreenArSlot, setFullscreenArSlot] = useState<ArCaptureSlot | null>(null);
   const [arSnapA, setArSnapA] = useState<ArSnapshot | null>(null);
   const [arSnapB, setArSnapB] = useState<ArSnapshot | null>(null);
-  const [arEstDistM, setArEstDistM] = useState<string>('250');
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-
-  const playerEle = useMemo(
-    () => Math.round(sampleDemElevation(dataset.dem, dataset.bounds, playerLat, playerLon)),
-    [dataset, playerLat, playerLon]
-  );
 
   const notify = useCallback((msg: string) => {
     setNoteBanner(msg);
@@ -179,65 +170,6 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
       setNoteBanner((prev) => (prev === msg ? null : prev));
     }, 3200);
   }, []);
-
-  const stopArCamera = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((t) => t.stop());
-      streamRef.current = null;
-    }
-    setArCamActive(false);
-  }, []);
-
-  useEffect(() => {
-    if (!showArDrawer) {
-      stopArCamera();
-    }
-  }, [showArDrawer, stopArCamera]);
-
-  useEffect(() => {
-    return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!arCamActive || !showArDrawer) return;
-    let cancelled = false;
-
-    const startCam = async () => {
-      setArCamError(null);
-      try {
-        if (!navigator.mediaDevices?.getUserMedia) {
-          setArCamError('Máy không mở được camera trực tiếp — vẫn ngắm chuẩn theo cảm biến la bàn bên dưới.');
-          return;
-        }
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' } },
-          audio: false
-        });
-        if (cancelled) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          await videoRef.current.play().catch(() => {});
-        }
-      } catch (err) {
-        setArCamError(
-          `Không bật được camera (${err instanceof Error ? err.message : 'từ chối quyền'}) — vẫn dùng được kính ngắm cảm biến.`
-        );
-      }
-    };
-
-    startCam();
-    return () => {
-      cancelled = true;
-    };
-  }, [arCamActive, showArDrawer]);
 
   const handleSwitchBearingSubMode = (next: BearingSubMode) => {
     setBearingSubMode(next);
@@ -254,10 +186,8 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     }
   };
 
-  const openInlineArFor = (slot: 'A' | 'B' | 'proj' | 'free') => {
-    setArTargetSlot(slot);
-    setShowArDrawer(true);
-    setArCamActive(true);
+  const openInlineArFor = (slot: ArCaptureSlot) => {
+    setFullscreenArSlot(slot);
     if (!useRealSensor && onToggleRealSensor) {
       onToggleRealSensor(true);
     }
@@ -444,19 +374,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     circleResult
   ]);
 
-  // AR HUD Target Metrics
   const normHeading = ((Math.round(compassHeading) % 360) + 360) % 360;
-  const arTargetInfo = useMemo(() => {
-    if (!lockedTarget) return null;
-    const brng = computeBearingDeg(playerLat, playerLon, lockedTarget.lat, lockedTarget.lon);
-    const delta = ((brng - compassHeading + 540) % 360) - 180;
-    const dist = haversineDistanceM(playerLat, playerLon, lockedTarget.lat, lockedTarget.lon);
-    return { brng: Math.round(brng), delta: Math.round(delta), dist };
-  }, [lockedTarget, playerLat, playerLon, compassHeading]);
-
-  const arEstD = Math.max(1, parseFloat(arEstDistM) || 250);
-  const arHeightDeltaM = arEstD * Math.tan((Math.max(-80, Math.min(80, pitchDeg)) * Math.PI) / 180);
-  const arProjectedCoord = projectPointByBearing(playerLat, playerLon, normHeading, arEstD);
 
   const renderStationOptions = (snap: ArSnapshot | null) => (
     <>
@@ -495,11 +413,11 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
     </>
   );
 
-  const captureFromAr = (slot: 'A' | 'B' | 'proj') => {
-    const h = normHeading;
+  const captureFromAr = (slot: 'A' | 'B' | 'proj', headingDeg: number, pitchVal: number) => {
+    const h = ((Math.round(headingDeg) % 360) + 360) % 360;
     if (slot === 'proj') {
       setProjAzimuth(String(h));
-      setShowArDrawer(false);
+      setFullscreenArSlot(null);
       notify(`📌 Đã chốt góc ngắm ${h}° vào Chiếu 1 Tia!`);
       return;
     }
@@ -508,7 +426,7 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
       lat: playerLat,
       lon: playerLon,
       heading: h,
-      pitch: Number(pitchDeg.toFixed(1)),
+      pitch: Number(pitchVal.toFixed(1)),
       label: `AR ${slot} ∠${String(h).padStart(3, '0')}°`
     };
     if (slot === 'A') {
@@ -526,12 +444,12 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
       setBearingB(String(h));
       notify(`📌 Đã chốt góc Tia B: ${h}°!`);
     }
-    setShowArDrawer(false);
+    setFullscreenArSlot(null);
   };
 
   return (
     <div className="toolkit-body eng-toolkit-root">
-      {/* 1-Row Unified Mission Selector + Inline AR Toggle */}
+      {/* 1-Row Unified Mission Selector + Fullscreen Landscape AR Launcher */}
       <div className="subtab-strip">
         <button
           type="button"
@@ -556,141 +474,36 @@ export const TacticalSightingPanel: React.FC<TacticalSightingPanelProps> = ({
         </button>
         <button
           type="button"
-          className={showArDrawer ? 'active' : ''}
-          onClick={() => {
-            if (showArDrawer) {
-              setShowArDrawer(false);
-            } else {
-              openInlineArFor(mode === 'project' ? 'proj' : 'free');
-            }
-          }}
+          className={fullscreenArSlot ? 'active' : ''}
+          onClick={() => openInlineArFor(mode === 'project' ? 'proj' : 'free')}
         >
-          📷 AR
+          📷 AR Ngang
         </button>
       </div>
 
       {noteBanner && <div className="success-box compact-alert">{noteBanner}</div>}
 
-      {/* Inline AR Sighting Drawer (opens right here in 1 tap — zero tab bouncing!) */}
-      {showArDrawer && (
-        <div className="inline-ar-drawer">
-          <div className="clino-actions-row">
-            <button
-              type="button"
-              className={`secondary-action-btn ${arCamActive ? 'active-pill-btn' : ''}`}
-              onClick={() => (arCamActive ? stopArCamera() : setArCamActive(true))}
-            >
-              {arCamActive ? '⏹️ Tắt Camera' : '📷 Bật Camera'}
-            </button>
-            {onToggleRealSensor && (
-              <button
-                type="button"
-                className={`secondary-action-btn ${useRealSensor ? 'active-pill-btn' : ''}`}
-                onClick={() => onToggleRealSensor(!useRealSensor)}
-              >
-                {useRealSensor ? '🧭 La Bàn Thật: BẬT' : '🎛️ Bật La Bàn Thật'}
-              </button>
-            )}
-            <button type="button" className="secondary-action-btn" onClick={() => setShowArDrawer(false)}>
-              ✕ Đóng AR
-            </button>
-          </div>
-
-          {arCamError && <div className="error-box">{arCamError}</div>}
-
-          <div className="ar-sight-viewport">
-            {arCamActive && <video ref={videoRef} playsInline muted className="ar-video-bg" />}
-            <div className="ar-hud-overlay">
-              <div className="ar-hud-top-bar">
-                <span>
-                  AZM <strong>{formatBearingCardinal(normHeading)}</strong>
-                </span>
-                <span>
-                  DỐC <strong>{pitchDeg >= 0 ? `+${pitchDeg.toFixed(1)}°` : `${pitchDeg.toFixed(1)}°`}</strong>
-                </span>
-                <span>
-                  ALT <strong>{playerEle}m</strong>
-                </span>
-              </div>
-
-              {arTargetInfo && (
-                <div className="ar-target-callout">
-                  🎯 {lockedTarget?.name}: {arTargetInfo.brng}° (lệch{' '}
-                  {arTargetInfo.delta >= 0 ? `+${arTargetInfo.delta}°` : `${arTargetInfo.delta}°`} •{' '}
-                  {formatDistance(arTargetInfo.dist)})
-                </div>
-              )}
-
-              <svg viewBox="0 0 240 120" className="ar-reticle-svg" aria-hidden="true">
-                <g transform={`translate(120, ${60 + Math.max(-36, Math.min(36, pitchDeg * 1.3))}) rotate(${-rollDeg})`}>
-                  <line x1="-88" y1="0" x2="-22" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
-                  <line x1="22" y1="0" x2="88" y2="0" stroke="rgba(203,213,225,0.68)" strokeWidth="1.4" />
-                </g>
-                <circle cx="120" cy="60" r="13" fill="none" stroke="rgba(200,162,90,0.88)" strokeWidth="1.3" />
-                <line x1="120" y1="40" x2="120" y2="53" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="120" y1="67" x2="120" y2="80" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="100" y1="60" x2="113" y2="60" stroke="#e2e8f0" strokeWidth="1.4" />
-                <line x1="127" y1="60" x2="140" y2="60" stroke="#e2e8f0" strokeWidth="1.4" />
-                <circle cx="120" cy="60" r="2" fill="#c8a25a" />
-              </svg>
-            </div>
-          </div>
-
-          {arTargetSlot === 'A' || arTargetSlot === 'B' ? (
-            <button
-              type="button"
-              className="primary-action-btn full-w"
-              onClick={() => captureFromAr(arTargetSlot)}
-            >
-              📌 Chốt Góc Ngắm ({normHeading}°) Vào Điểm {arTargetSlot}
-            </button>
-          ) : arTargetSlot === 'proj' ? (
-            <button
-              type="button"
-              className="primary-action-btn full-w"
-              onClick={() => captureFromAr('proj')}
-            >
-              📌 Chốt Hướng {normHeading}° Vào Chiếu 1 Tia
-            </button>
-          ) : (
-            <>
-              <div className="ar-capture-bar">
-                <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('A')}>
-                  📌 Chốt Tia A ({normHeading}°)
-                </button>
-                <button type="button" className="secondary-action-btn" onClick={() => captureFromAr('B')}>
-                  📌 Chốt Tia B ({normHeading}°)
-                </button>
-              </div>
-              <div className="calc-input-row">
-                <input
-                  type="number"
-                  min={1}
-                  value={arEstDistM}
-                  onChange={(e) => setArEstDistM(e.target.value)}
-                  placeholder="Cự ly ước lượng (m)"
-                />
-                <button
-                  type="button"
-                  className="primary-action-btn"
-                  onClick={() =>
-                    onPinTargets([
-                      {
-                        lat: arProjectedCoord.lat,
-                        lon: arProjectedCoord.lon,
-                        label: `Ngắm AR ${arEstD}m ∠${normHeading}°`,
-                        note: `Ngắm AR hướng ${normHeading}°, cự ly ${arEstD}m, ΔH ≈ ${arHeightDeltaM >= 0 ? '+' : ''}${arHeightDeltaM.toFixed(1)}m`
-                      }
-                    ])
-                  }
-                >
-                  🎯 Ghim Điểm Ngắm ({arEstD}m)
-                </button>
-              </div>
-            </>
-          )}
-        </div>
-      )}
+      {/* Fullscreen Landscape AR Rangefinder Overlay (rendered into .app-shell via Portal) */}
+      {fullscreenArSlot &&
+        createPortal(
+          <ArRangefinderOverlay
+            dataset={dataset}
+            playerLat={playerLat}
+            playerLon={playerLon}
+            playerAccuracy={playerAccuracy}
+            compassHeading={compassHeading}
+            pitchDeg={pitchDeg}
+            rollDeg={rollDeg}
+            useRealSensor={useRealSensor}
+            lockedTarget={lockedTarget}
+            captureSlot={fullscreenArSlot}
+            onToggleRealSensor={(enable) => onToggleRealSensor?.(enable)}
+            onCaptureBearing={captureFromAr}
+            onPinTarget={(item) => onPinTargets([item])}
+            onClose={() => setFullscreenArSlot(null)}
+          />,
+          document.querySelector('.app-shell') || document.body
+        )}
 
       {/* MODE 1: Single-Ray Projection ("Từ mốc A đi X mét về hướng Y độ") */}
       {mode === 'project' && (

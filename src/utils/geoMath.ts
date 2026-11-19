@@ -1259,3 +1259,247 @@ export function trimRouteFromPlayer(
     ...metrics
   };
 }
+
+// ============================================================================
+// AR OPTICAL & 3D DEM RANGEFINDER ENGINE (100% Offline, Gimbal-Lock-Free)
+// ============================================================================
+
+/**
+ * Exact 3D W3C DeviceOrientation (Z-X'-Y'' intrinsic) camera elevation & horizon roll.
+ * - cameraPitchDeg: 0° = camera aimed level at true horizon, +30° = 30° UP, -20° = 20° DOWN, -90° = flat face-up.
+ * - cameraRollDeg:  0° = landscape/portrait screen perfectly level with horizon.
+ * Immune to the 180° gimbal-lock jump at gamma = ±90° in Landscape mode!
+ */
+export function computeCameraAttitude(
+  betaDeg: number,
+  gammaDeg: number,
+  screenAngleDeg: number
+): { pitchDeg: number; rollDeg: number } {
+  const b = betaDeg * DEG_TO_RAD;
+  const g = gammaDeg * DEG_TO_RAD;
+  const s = screenAngleDeg * DEG_TO_RAD;
+  const cb = Math.cos(b);
+  const sb = Math.sin(b);
+  const cg = Math.cos(g);
+  const sg = Math.sin(g);
+
+  // World UP vector expressed in Device coordinates (3rd row of R = Rz(a) * Rx(b) * Ry(g))
+  const upX = -cb * sg;
+  const upY = sb;
+  const upZ = cb * cg;
+
+  // Back camera points along -Z_dev -> elevation angle above horizon is asin(-upZ)
+  const lookUp = Math.max(-1, Math.min(1, -upZ));
+  const pitchDeg = Math.asin(lookUp) * RAD_TO_DEG;
+
+  // Screen right & up vectors in Device coordinates for current orientation
+  const cs = Math.cos(s);
+  const ss = Math.sin(s);
+  const uRight = upX * cs - upY * ss;
+  const uUp = upX * ss + upY * cs;
+  const rollDeg = Math.atan2(uRight, uUp) * RAD_TO_DEG;
+
+  return { pitchDeg, rollDeg };
+}
+
+export interface GroundTiltRangeResult {
+  valid: boolean;
+  horizDistM: number;
+  slantDistM: number;
+  errorAt1DegM: number;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+}
+
+/**
+ * Close-range (1.5m - 120m) level-ground optical rangefinder by sighting the BASE of an object.
+ * D = h_eye / tan(|pitch|) when pitch < 0 (aiming downward below horizon).
+ * Includes real differential sensitivity |dD/dθ| for ±1° sensor error so users know exact accuracy!
+ */
+export function computeGroundTiltRangeM(eyeHeightM: number, pitchDeg: number): GroundTiltRangeResult {
+  const h = Math.max(0.3, eyeHeightM);
+  if (pitchDeg >= -0.6) {
+    return {
+      valid: false,
+      horizDistM: 0,
+      slantDistM: 0,
+      errorAt1DegM: 0,
+      confidence: 'low',
+      reason: 'Hãy nghiêng tâm ngắm XUỐNG chạm chân vật trên mặt đất (góc âm < −1°)'
+    };
+  }
+  const absDeg = Math.min(86, Math.abs(pitchDeg));
+  const rad = absDeg * DEG_TO_RAD;
+  const horizDistM = h / Math.tan(rad);
+  const slantDistM = h / Math.sin(rad);
+  // Differential sensitivity: |dD/dθ| * 1° = ((D^2 + h^2) / h) * (pi / 180)
+  const errorAt1DegM = ((horizDistM * horizDistM + h * h) / h) * DEG_TO_RAD;
+
+  let confidence: 'high' | 'medium' | 'low' = 'high';
+  let reason = 'Góc ngắm đẹp — sai số cảm biến thấp';
+  if (absDeg < 2.5 || horizDistM > 38) {
+    confidence = 'low';
+    reason = 'Góc quá nông (<2.5°) nên 1° lệch làm sai số lớn — nên chuyển sang Địa hình 3D hoặc Khung vật';
+  } else if (absDeg < 6.0 || horizDistM > 16) {
+    confidence = 'medium';
+    reason = 'Độ chính xác khá — giữ chắc 2 tay và cân bằng vạch chân trời xanh';
+  }
+
+  return {
+    valid: true,
+    horizDistM,
+    slantDistM,
+    errorAt1DegM,
+    confidence,
+    reason
+  };
+}
+
+/**
+ * Optical stadiametric rangefinder: measures distance by framing an object of known real height
+ * inside a calibrated fraction (0..1) of the landscape camera frame height.
+ * D = H_real / (2 * bracketFraction * tan(vFOV / 2))
+ */
+export function computeStadiametricRangeM(
+  objectHeightM: number,
+  bracketFraction: number,
+  verticalFovDeg = 46
+): number {
+  const h = Math.max(0.1, objectHeightM);
+  const f = Math.max(0.02, Math.min(0.98, bracketFraction));
+  const halfFovRad = (Math.max(15, Math.min(110, verticalFovDeg)) / 2) * DEG_TO_RAD;
+  return h / (2 * f * Math.tan(halfFovRad));
+}
+
+/**
+ * Solve exact camera vertical FOV (degrees) during 5-second calibration at known distance (e.g. 3m / 5m).
+ */
+export function calibrateVerticalFovDeg(
+  objectHeightM: number,
+  bracketFraction: number,
+  knownDistM: number
+): number {
+  const h = Math.max(0.1, objectHeightM);
+  const f = Math.max(0.02, Math.min(0.98, bracketFraction));
+  const d = Math.max(0.5, knownDistM);
+  const vFov = 2 * Math.atan(h / (2 * f * d)) * RAD_TO_DEG;
+  return Math.max(20, Math.min(95, Number(vFov.toFixed(1))));
+}
+
+export interface DemRaycastRangeResult {
+  hit: boolean;
+  horizDistM: number;
+  slantDistM: number;
+  lat: number;
+  lon: number;
+  targetEle: number;
+  eleDiffM: number;
+  reason?: string;
+}
+
+/**
+ * 3D DEM Terrain Ray-Marching Rangefinder (50m - 5,000m) over Nui Dinh Copernicus GLO-30 256x256 DEM.
+ * Shoots a 3D optical ray from (originLat, originLon, groundEle + eyeHeightM) along (azimuthDeg, pitchDeg),
+ * includes Earth curvature correction, and refines exact mountain intersection via binary search!
+ */
+export function raycastDemDistance(
+  dataset: NuiDinhDataset,
+  originLat: number,
+  originLon: number,
+  eyeHeightM: number,
+  azimuthDeg: number,
+  pitchDeg: number,
+  maxDistM = 5000
+): DemRaycastRangeResult {
+  const { bounds, dem } = dataset;
+  if (
+    originLat < bounds.south ||
+    originLat > bounds.north ||
+    originLon < bounds.west ||
+    originLon > bounds.east
+  ) {
+    return {
+      hit: false,
+      horizDistM: 0,
+      slantDistM: 0,
+      lat: originLat,
+      lon: originLon,
+      targetEle: 0,
+      eleDiffM: 0,
+      reason: 'Vị trí hiện tại đang ở ngoài khung 3D Núi Dinh (dùng Chân Vật hoặc Khung Vật)'
+    };
+  }
+
+  const originGroundEle = sampleDemElevation(dem, bounds, originLat, originLon);
+  const startEle = originGroundEle + Math.max(0.5, eyeHeightM);
+  const azRad = (((azimuthDeg % 360) + 360) % 360) * DEG_TO_RAD;
+  const clampedPitch = Math.max(-84, Math.min(84, pitchDeg));
+  const tanPitch = Math.tan(clampedPitch * DEG_TO_RAD);
+  const { mPerLat, mPerLon } = wgs84MetersPerDeg(originLat);
+  const sinAz = Math.sin(azRad);
+  const cosAz = Math.cos(azRad);
+
+  const evalAtDist = (d: number) => {
+    const lat = originLat + (d * cosAz) / mPerLat;
+    const lon = originLon + (d * sinAz) / mPerLon;
+    const inBounds = lat >= bounds.south && lat <= bounds.north && lon >= bounds.west && lon <= bounds.east;
+    // Earth curvature drop: d^2 / (2 * R_earth)
+    const rayEle = startEle + d * tanPitch - (d * d) / (2 * EARTH_RADIUS_M);
+    const groundEle = inBounds ? sampleDemElevation(dem, bounds, lat, lon) : -9999;
+    return { lat, lon, inBounds, rayEle, groundEle };
+  };
+
+  const stepM = 12;
+  let prevD = 0;
+  for (let d = stepM; d <= maxDistM; d += stepM) {
+    const sample = evalAtDist(d);
+    if (!sample.inBounds) {
+      return {
+        hit: false,
+        horizDistM: 0,
+        slantDistM: 0,
+        lat: originLat,
+        lon: originLon,
+        targetEle: Math.round(originGroundEle),
+        eleDiffM: 0,
+        reason: 'Tia ngắm đã đi ra ngoài biên Núi Dinh (đang chĩa lên trời hoặc ra đồng bằng)'
+      };
+    }
+
+    if (sample.rayEle <= sample.groundEle) {
+      // Binary search refinement between prevD and d -> < 0.02m precision!
+      let lo = prevD;
+      let hi = d;
+      for (let iter = 0; iter < 10; iter++) {
+        const mid = (lo + hi) * 0.5;
+        const mSample = evalAtDist(mid);
+        if (mSample.rayEle <= mSample.groundEle) hi = mid;
+        else lo = mid;
+      }
+      const hitSample = evalAtDist(hi);
+      const eleDiffM = hitSample.groundEle - originGroundEle;
+      const slantDistM = Math.hypot(hi, hitSample.groundEle - startEle);
+      return {
+        hit: true,
+        horizDistM: hi,
+        slantDistM,
+        lat: Number(hitSample.lat.toFixed(6)),
+        lon: Number(hitSample.lon.toFixed(6)),
+        targetEle: Math.round(hitSample.groundEle),
+        eleDiffM: Math.round(eleDiffM)
+      };
+    }
+    prevD = d;
+  }
+
+  return {
+    hit: false,
+    horizDistM: 0,
+    slantDistM: 0,
+    lat: originLat,
+    lon: originLon,
+    targetEle: Math.round(originGroundEle),
+    eleDiffM: 0,
+    reason: 'Tia ngắm vượt quá đỉnh núi / chĩa lên trời — hãy hạ góc camera chạm vào sườn núi'
+  };
+}

@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type {
   ImportedGpxTrack,
   NuiDinhDataset,
@@ -27,6 +28,7 @@ import {
 import { CipherDecoderPanel } from './CipherDecoderPanel';
 import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
 import { TacticalSightingPanel, type PinRequestPayload } from './TacticalSightingPanel';
+import { ArRangefinderOverlay } from './ArRangefinderOverlay';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -469,6 +471,7 @@ interface ReconToolkitModalProps {
   initialApkUrl?: string | null;
   playerLat: number;
   playerLon: number;
+  playerAccuracy?: number | null;
   compassHeading?: number;
   pitchDeg?: number;
   rollDeg?: number;
@@ -496,6 +499,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   initialApkUrl = null,
   playerLat,
   playerLon,
+  playerAccuracy = null,
   compassHeading = 0,
   pitchDeg = 0,
   rollDeg = 0,
@@ -516,6 +520,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   onClose
 }) => {
   const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
+  const [quickArOpen, setQuickArOpen] = useState<boolean>(false);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
   const [backupErr, setBackupErr] = useState<string | null>(null);
   const plannedTileTotal = React.useMemo(
@@ -834,9 +839,19 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
             <h3>🔐 Mật Thư • Kỹ Thuật • Offline &amp; OTA</h3>
             <p className="mono-sub">Hoạt động 100% không cần mạng khi vào rừng sâu</p>
           </div>
-          <button type="button" className="icon-close-btn" onClick={onClose}>
-            ✕
-          </button>
+          <div className="sheet-header-actions">
+            <button
+              type="button"
+              className="ar-launch-pill"
+              onClick={() => setQuickArOpen(true)}
+              title="Mở Camera AR Đo Khoảng Cách toàn màn hình nằm ngang"
+            >
+              📷 AR Đo Cự Ly
+            </button>
+            <button type="button" className="icon-close-btn" onClick={onClose}>
+              ✕
+            </button>
+          </div>
         </div>
 
         <div className="segmented-tabs">
@@ -877,6 +892,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
             dataset={dataset}
             playerLat={playerLat}
             playerLon={playerLon}
+            playerAccuracy={playerAccuracy}
             compassHeading={compassHeading}
             pitchDeg={pitchDeg}
             rollDeg={rollDeg}
@@ -887,6 +903,26 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
             onPinTargets={handlePinTargetsFromSighting}
           />
         )}
+
+        {quickArOpen &&
+          createPortal(
+            <ArRangefinderOverlay
+              dataset={dataset}
+              playerLat={playerLat}
+              playerLon={playerLon}
+              playerAccuracy={playerAccuracy}
+              compassHeading={compassHeading}
+              pitchDeg={pitchDeg}
+              rollDeg={rollDeg}
+              useRealSensor={useRealSensor}
+              lockedTarget={lockedTarget}
+              captureSlot="free"
+              onToggleRealSensor={(en) => onToggleRealSensor?.(en)}
+              onPinTarget={(item) => handlePinTargetsFromSighting([item], true)}
+              onClose={() => setQuickArOpen(false)}
+            />,
+            document.querySelector('.app-shell') || document.body
+          )}
 
         {tab === 'offline' && (
           <div className="toolkit-body">
