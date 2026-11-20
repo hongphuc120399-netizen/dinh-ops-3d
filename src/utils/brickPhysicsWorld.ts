@@ -159,7 +159,8 @@ export class BrickTowerPhysicsSim {
     addPair(brickMat, stoneMat, 0.65, 0.03);
     addPair(brickMat, this.metalMat, 0.58, 0.03);
 
-    addPair(plateMat, plasticMat, 0.38, 0.08);
+    addPair(plateMat, plateMat, 0.56, 0.03);
+    addPair(plateMat, plasticMat, 0.44, 0.05);
     addPair(plateMat, woodMat, 0.5, 0.05);
     addPair(plateMat, this.metalMat, 0.52, 0.03);
     addPair(plasticMat, plasticMat, 0.32, 0.12);
@@ -203,7 +204,7 @@ export class BrickTowerPhysicsSim {
       const mat =
         p.kind === 'block'
           ? brickMat
-          : p.kind === 'plate'
+          : p.kind === 'plate' || p.kind === 'stool' || p.kind === 'basket'
             ? plateMat
             : p.kind === 'cylinder'
               ? plasticMat
@@ -211,7 +212,14 @@ export class BrickTowerPhysicsSim {
                 ? woodMat
                 : stoneMat;
 
-      const effectiveMass = p.kind === 'plate' ? Math.max(0.55, p.massKg) : Math.max(0.025, p.massKg);
+      const effectiveMass =
+        p.kind === 'stool'
+          ? Math.max(2.2, p.massKg)
+          : p.kind === 'plate'
+            ? Math.max(0.55, p.massKg)
+            : p.kind === 'basket'
+              ? Math.max(0.45, p.massKg)
+              : Math.max(0.025, p.massKg);
       const body = new CANNON.Body({
         mass: effectiveMass,
         material: mat,
@@ -567,7 +575,14 @@ export class BrickTowerPhysicsSim {
           const worldAxisZ = b.quaternion.vmult(CANNON.Vec3.UNIT_Z, this.tmpV2);
           const projWidthM = Math.abs(worldAxisX.x) * p.sz + Math.abs(worldAxisZ.x) * p.sx;
           frontalAreaM2 = Math.max(0.0005, projWidthM * p.sy);
-          cd = p.kind === 'plate' ? 1.15 : 1.24;
+          cd =
+            p.kind === 'stool'
+              ? 0.44
+              : p.kind === 'basket'
+                ? 0.52
+                : p.kind === 'plate'
+                  ? 1.15
+                  : 1.24;
         }
 
         const wakeShield = h.sameCourseCount > 1 ? 1 / Math.sqrt(h.sameCourseCount) : 1.0;

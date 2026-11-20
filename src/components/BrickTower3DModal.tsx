@@ -56,12 +56,26 @@ function saveInventory(items: TowerInventoryItem[]): void {
   }
 }
 
-/** Maps Stress Utilization % (0..100+%) to Green -> Amber -> Crimson Heatmap hex color */
-function stressUtilizationToHex(utilPct: number): number {
-  if (utilPct < 38) return 0x10b981; // Emerald safe
-  if (utilPct < 65) return 0xf59e0b; // Amber working load
-  if (utilPct < 88) return 0xf97316; // Orange high stress
-  return 0xef4444; // Crimson near/over limit!
+/**
+ * Blends a part's natural color into Vivid Engineering RED based on Load-Bearing Zone Intensity (0..100).
+ * Lightly loaded upper parts keep their natural color; primary load-bearing / bottleneck courses glow RED!
+ */
+const _tmpBaseCol = new THREE.Color();
+const _tmpWarnCol = new THREE.Color(0xf97316);
+const _tmpRedCol = new THREE.Color(0xdc2626);
+function computeLoadBearingDisplayHex(baseColor: string, redIntensity: number): number {
+  _tmpBaseCol.set(baseColor);
+  if (redIntensity < 36) {
+    return _tmpBaseCol.getHex();
+  }
+  if (redIntensity < 70) {
+    const t = ((redIntensity - 36) / 34) * 0.65;
+    _tmpBaseCol.lerp(_tmpWarnCol, t);
+    return _tmpBaseCol.getHex();
+  }
+  const tRed = Math.min(0.92, 0.62 + ((redIntensity - 70) / 30) * 0.3);
+  _tmpBaseCol.lerp(_tmpRedCol, tRed);
+  return _tmpBaseCol.getHex();
 }
 
 export interface BrickTower3DModalProps {
@@ -93,15 +107,16 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
     topPayloadKg: 0
   });
 
-  // Live interactive test load (sliders act directly on the live 3D cannon-es rigid-body world!)
-  const [testBeaufort, setTestBeaufort] = useState<number>(3);
-  const [testTiltDeg, setTestTiltDeg] = useState<number>(2.0);
-  const [testShakePct, setTestShakePct] = useState<number>(12); // 0..100% -> 0..0.28g
+  // Live interactive test load (starts in Calm Idle = 0 wind / 0 slope / 0 shake so leaving it untouched never self-topples!)
+  const [testBeaufort, setTestBeaufort] = useState<number>(0);
+  const [testTiltDeg, setTestTiltDeg] = useState<number>(0.0);
+  const [testShakePct, setTestShakePct] = useState<number>(0); // 0..100% -> 0..0.28g
   const [testTopPayloadKg, setTestTopPayloadKg] = useState<number>(0); // 0..25kg real weight on crown!
   const [usePhoneTiltTest, setUsePhoneTiltTest] = useState<boolean>(false);
   const [autoAdaptLive, setAutoAdaptLive] = useState<boolean>(false);
   const [physicsPaused, setPhysicsPaused] = useState<boolean>(false);
-  const [showStressHeatmap, setShowStressHeatmap] = useState<boolean>(false);
+  // Highlight Red Load-Bearing Zones ON by default!
+  const [showStressHeatmap, setShowStressHeatmap] = useState<boolean>(true);
 
   // Real-time rigid-body collapse status (updated ONLY on edge transitions, zero polling re-renders!)
   const [physCollapsed, setPhysCollapsed] = useState<boolean>(false);
@@ -148,7 +163,17 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
     [testBeaufort, effectiveTiltDeg, testShakePct, testTopPayloadKg]
   );
 
-  const activeDesignEnv = autoAdaptLive ? liveEnv : designEnv;
+  // Even when live sliders are at 0 (Calm Idle), design the tower to withstand at least Cấp 3 wind + 2° slope + 12% shake!
+  const activeDesignEnv = useMemo<EnvironmentLoadConfig>(() => {
+    const src = autoAdaptLive ? liveEnv : designEnv;
+    return {
+      beaufortLevel: Math.max(3, src.beaufortLevel),
+      windSpeedMps: Math.max(BEAUFORT_TABLE[3].windMps, src.windSpeedMps),
+      tiltDeg: Math.max(2.0, src.tiltDeg),
+      shakeG: Math.max(0.032, src.shakeG),
+      topPayloadKg: src.topPayloadKg ?? 0
+    };
+  }, [autoAdaptLive, liveEnv, designEnv]);
   const candidateLadder = useMemo<TowerSolution[]>(
     () => solveRankedBrickTowers(inventory, activeDesignEnv, buildMode, 12),
     [inventory, activeDesignEnv, buildMode]
@@ -239,13 +264,17 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
           ? '#a3be5c'
           : customKind === 'plate'
             ? '#d4a373'
-            : customKind === 'ballast'
-              ? '#64748b'
-              : customKind === 'binder'
-                ? '#fde047'
-                : customKind === 'cylinder'
-                  ? '#38bdf8'
-                  : '#d97742',
+            : customKind === 'stool'
+              ? '#2563eb'
+              : customKind === 'basket'
+                ? '#14b8a6'
+                : customKind === 'ballast'
+                  ? '#64748b'
+                  : customKind === 'binder'
+                    ? '#fde047'
+                    : customKind === 'cylinder'
+                      ? '#38bdf8'
+                      : '#d97742',
       isCustom: true
     };
     updateInvList((prev) => [...prev, newItem]);
@@ -317,6 +346,7 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
     comMarker: THREE.Mesh;
     plumbLine: THREE.Line;
     supportRing: THREE.Mesh;
+    criticalStressRing: THREE.Mesh;
     windLines: THREE.LineSegments;
     windPositions: Float32Array;
     // Shared unit geometries & materials -> ZERO per-brick geometry/shader allocations!
@@ -325,10 +355,14 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
     unitCylGeo: THREE.CylinderGeometry;
     unitBandGeo: THREE.CylinderGeometry;
     sharedEdgeMat: THREE.LineBasicMaterial;
+    sharedRedEdgeMat: THREE.LineBasicMaterial;
     sharedBandMat: THREE.MeshBasicMaterial;
     materialPool: Map<string, THREE.MeshLambertMaterial>;
     partMeshes: Map<string, THREE.Object3D>;
-    partPrimaryMeshes: Map<string, { mesh: THREE.Mesh; baseColor: string; courseIndex: number }>;
+    partPrimaryMeshes: Map<
+      string,
+      { meshes: THREE.Mesh[]; edges: THREE.LineSegments[]; baseColor: string; courseIndex: number }
+    >;
     guyWireLines: Map<string, THREE.Line>;
   } | null>(null);
 
@@ -471,6 +505,21 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
     supportRing.position.y = 0.003;
     tableGroup.add(supportRing);
 
+    // 3D Red Critical Load-Bearing Zone Ring (highlights the most heavily stressed joint plane!)
+    const critRingGeo = new THREE.RingGeometry(0.11, 0.142, 32);
+    critRingGeo.rotateX(-Math.PI / 2);
+    const criticalStressRing = new THREE.Mesh(
+      critRingGeo,
+      new THREE.MeshBasicMaterial({
+        color: 0xef4444,
+        side: THREE.DoubleSide,
+        transparent: true,
+        opacity: 0.78
+      })
+    );
+    criticalStressRing.position.y = 0.006;
+    tableGroup.add(criticalStressRing);
+
     const partsGroup = new THREE.Group();
     const rulerGroup = new THREE.Group();
     tableGroup.add(partsGroup, rulerGroup);
@@ -484,6 +533,11 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       color: 0x0f172a,
       transparent: true,
       opacity: 0.68
+    });
+    const sharedRedEdgeMat = new THREE.LineBasicMaterial({
+      color: 0xff5252,
+      transparent: true,
+      opacity: 0.92
     });
     const sharedBandMat = new THREE.MeshBasicMaterial({ color: 0xfef08a });
 
@@ -563,6 +617,7 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       comMarker,
       plumbLine,
       supportRing,
+      criticalStressRing,
       windLines,
       windPositions,
       unitBoxGeo,
@@ -570,6 +625,7 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       unitCylGeo,
       unitBandGeo,
       sharedEdgeMat,
+      sharedRedEdgeMat,
       sharedBandMat,
       materialPool,
       partMeshes: new Map(),
@@ -795,7 +851,10 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       unitCylGeo.dispose();
       unitBandGeo.dispose();
       sharedEdgeMat.dispose();
+      sharedRedEdgeMat.dispose();
       sharedBandMat.dispose();
+      criticalStressRing.geometry.dispose();
+      (criticalStressRing.material as THREE.Material).dispose();
       materialPool.forEach((m) => m.dispose());
       renderer.dispose();
       if (renderer.domElement.parentElement === container) {
@@ -874,7 +933,12 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
         mesh.scale.set(d, p.sy * 0.994, d);
         mesh.userData = { isTransparentBottle };
         holder.add(mesh);
-        ctx.partPrimaryMeshes.set(p.id, { mesh, baseColor: p.color, courseIndex: p.courseIndex });
+        ctx.partPrimaryMeshes.set(p.id, {
+          meshes: [mesh],
+          edges: [],
+          baseColor: p.color,
+          courseIndex: p.courseIndex
+        });
 
         if (p.tapedToBelow || p.lashedToCourseMin !== undefined) {
           const band = new THREE.Mesh(ctx.unitBandGeo, ctx.sharedBandMat);
@@ -885,6 +949,103 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
         return holder;
       }
 
+      // Authentic 3D Backless Plastic Stool (`Ghế nhựa không dựa`: flat molded seat + 4 corner legs + cross braces!)
+      if (p.kind === 'stool') {
+        const sx = p.sx * 0.992;
+        const sy = p.sy * 0.992;
+        const sz = p.sz * 0.992;
+        const meshes: THREE.Mesh[] = [];
+        const edgeList: THREE.LineSegments[] = [];
+
+        const addBoxSub = (
+          bx: number,
+          by: number,
+          bz: number,
+          px: number,
+          py: number,
+          pz: number
+        ) => {
+          const m = new THREE.Mesh(ctx.unitBoxGeo, mat);
+          m.scale.set(bx, by, bz);
+          m.position.set(px, py, pz);
+          m.userData = { isTransparentBottle: false };
+          holder.add(m);
+          meshes.push(m);
+          const e = new THREE.LineSegments(ctx.unitBoxEdges, ctx.sharedEdgeMat);
+          e.scale.set(bx, by, bz);
+          e.position.set(px, py, pz);
+          holder.add(e);
+          edgeList.push(e);
+        };
+
+        const seatH = sy * 0.1;
+        addBoxSub(sx * 0.94, seatH, sz * 0.94, 0, sy * 0.5 - seatH * 0.5, 0);
+
+        const legW = Math.max(0.022, Math.min(sx, sz) * 0.12);
+        const legH = sy - seatH;
+        const lx = sx * 0.5 - legW * 0.5;
+        const lz = sz * 0.5 - legW * 0.5;
+        const legY = -sy * 0.5 + legH * 0.5;
+        addBoxSub(legW, legH, legW, -lx, legY, -lz);
+        addBoxSub(legW, legH, legW, lx, legY, -lz);
+        addBoxSub(legW, legH, legW, -lx, legY, lz);
+        addBoxSub(legW, legH, legW, lx, legY, lz);
+
+        // 4 horizontal leg braces at mid-height
+        const rungH = Math.max(0.014, sy * 0.055);
+        const rungY = -sy * 0.08;
+        addBoxSub(sx - legW * 2, rungH, legW * 0.7, 0, rungY, -lz);
+        addBoxSub(sx - legW * 2, rungH, legW * 0.7, 0, rungY, lz);
+        addBoxSub(legW * 0.7, rungH, sz - legW * 2, -lx, rungY, 0);
+        addBoxSub(legW * 0.7, rungH, sz - legW * 2, lx, rungY, 0);
+
+        ctx.partPrimaryMeshes.set(p.id, {
+          meshes,
+          edges: edgeList,
+          baseColor: p.color,
+          courseIndex: p.courseIndex
+        });
+        return holder;
+      }
+
+      // Authentic 3D Inverted Plastic Basket (`Rổ nhựa úp ngược`: wide bottom rim + stepped perforated walls + flat top deck!)
+      if (p.kind === 'basket') {
+        const sx = p.sx * 0.992;
+        const sy = p.sy * 0.992;
+        const sz = p.sz * 0.992;
+        const meshes: THREE.Mesh[] = [];
+        const edgeList: THREE.LineSegments[] = [];
+
+        const addTier = (bx: number, by: number, bz: number, py: number) => {
+          const m = new THREE.Mesh(ctx.unitBoxGeo, mat);
+          m.scale.set(bx, by, bz);
+          m.position.set(0, py, 0);
+          m.userData = { isTransparentBottle: false };
+          holder.add(m);
+          meshes.push(m);
+          const e = new THREE.LineSegments(ctx.unitBoxEdges, ctx.sharedEdgeMat);
+          e.scale.set(bx, by, bz);
+          e.position.set(0, py, 0);
+          holder.add(e);
+          edgeList.push(e);
+        };
+
+        const rimH = sy * 0.16;
+        const midH = sy * 0.68;
+        const topH = sy * 0.16;
+        addTier(sx, rimH, sz, -sy * 0.5 + rimH * 0.5);
+        addTier(sx * 0.9, midH, sz * 0.9, -sy * 0.5 + rimH + midH * 0.5);
+        addTier(sx * 0.82, topH, sz * 0.82, sy * 0.5 - topH * 0.5);
+
+        ctx.partPrimaryMeshes.set(p.id, {
+          meshes,
+          edges: edgeList,
+          baseColor: p.color,
+          courseIndex: p.courseIndex
+        });
+        return holder;
+      }
+
       const sx = p.sx * 0.992;
       const sy = p.sy * 0.992;
       const sz = p.sz * 0.992;
@@ -892,11 +1053,17 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       mesh.scale.set(sx, sy, sz);
       mesh.userData = { isTransparentBottle: false };
       holder.add(mesh);
-      ctx.partPrimaryMeshes.set(p.id, { mesh, baseColor: p.color, courseIndex: p.courseIndex });
 
       const edges = new THREE.LineSegments(ctx.unitBoxEdges, ctx.sharedEdgeMat);
       edges.scale.set(sx, sy, sz);
       holder.add(edges);
+
+      ctx.partPrimaryMeshes.set(p.id, {
+        meshes: [mesh],
+        edges: [edges],
+        baseColor: p.color,
+        courseIndex: p.courseIndex
+      });
       return holder;
     };
 
@@ -957,18 +1124,39 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
       return m;
     };
 
+    // Position & scale 3D Red Critical Load-Bearing Zone Ring at the highest-stress joint plane!
+    const critIdx = liveSolution.loadReport.criticalCourseIndex;
+    const critJc = liveSolution.jointChecks[critIdx];
+    if (showStressHeatmap && critJc && baseSolution.courseCount > 0) {
+      ctx.criticalStressRing.visible = true;
+      ctx.criticalStressRing.position.y = Math.max(0.006, critJc.elevationM + 0.004);
+      const rCrit = Math.max(0.06, critJc.effectiveRadiusM * 1.32);
+      ctx.criticalStressRing.scale.setScalar(rCrit / 0.125);
+    } else {
+      ctx.criticalStressRing.visible = false;
+    }
+
     if (showStressHeatmap) {
-      const utils = liveSolution.loadReport.courseUtilizationPct;
-      ctx.partPrimaryMeshes.forEach(({ mesh, courseIndex }) => {
-        const isTrans = Boolean(mesh.userData?.isTransparentBottle);
-        const hmMat = ensurePoolMat(`heat-c${courseIndex}-${isTrans ? 't' : 'o'}`, '#34d399', isTrans);
-        hmMat.color.setHex(stressUtilizationToHex(utils[courseIndex] ?? 20));
-        mesh.material = hmMat;
+      const redArr = liveSolution.loadReport.courseRedIntensity ?? [];
+      ctx.partPrimaryMeshes.forEach(({ meshes, edges, baseColor, courseIndex }) => {
+        const redIntensity = redArr[courseIndex] ?? 0;
+        const isTrans = Boolean(meshes[0]?.userData?.isTransparentBottle);
+        const hmMat = ensurePoolMat(
+          `red-c${courseIndex}-${baseColor}-${isTrans ? 't' : 'o'}`,
+          baseColor,
+          isTrans
+        );
+        hmMat.color.setHex(computeLoadBearingDisplayHex(baseColor, redIntensity));
+        for (const m of meshes) m.material = hmMat;
+        const edgeMat = redIntensity >= 68 ? ctx.sharedRedEdgeMat : ctx.sharedEdgeMat;
+        for (const e of edges) e.material = edgeMat;
       });
     } else {
-      ctx.partPrimaryMeshes.forEach(({ mesh, baseColor }) => {
-        const isTrans = Boolean(mesh.userData?.isTransparentBottle);
-        mesh.material = ensurePoolMat(`col-${baseColor}-${isTrans ? 't' : 'o'}`, baseColor, isTrans);
+      ctx.partPrimaryMeshes.forEach(({ meshes, edges, baseColor }) => {
+        const isTrans = Boolean(meshes[0]?.userData?.isTransparentBottle);
+        const origMat = ensurePoolMat(`col-${baseColor}-${isTrans ? 't' : 'o'}`, baseColor, isTrans);
+        for (const m of meshes) m.material = origMat;
+        for (const e of edges) e.material = ctx.sharedEdgeMat;
       });
     }
   }, [
@@ -1043,22 +1231,14 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
             >
               💎 Cao &amp; Chắc Nhất
             </button>
-            <button
-              type="button"
-              className={buildMode === 'fortress' ? 'active' : ''}
-              onClick={() => setBuildMode('fortress')}
-              title="Hạ thấp trọng tâm dạng lô cốt chịu tải & chống bão cực đại"
-            >
-              🛡️ Siêu Vững
-            </button>
-            <button
-              type="button"
-              className={buildMode === 'naive' ? 'active' : ''}
-              onClick={() => setBuildMode('naive')}
-              title="Xếp chồng thẳng 1 cột để thử sập 3D"
-            >
-              ⚡ Thử Sập
-            </button>
+              <button
+                type="button"
+                className={buildMode === 'fortress' ? 'active' : ''}
+                onClick={() => setBuildMode('fortress')}
+                title="Hạ thấp trọng tâm dạng lô cốt chịu tải & chống bão cực đại"
+              >
+                🛡️ Siêu Vững
+              </button>
           </div>
           <button type="button" className="ar-close-btn" onClick={onClose}>
             ✕ Đóng
@@ -1101,6 +1281,8 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
                   }}
                 >
                   <option value="block">🧱 Khối hộp (Xếp tầng)</option>
+                  <option value="stool">🪑 Ghế nhựa không dựa (4 chân)</option>
+                  <option value="basket">🧺 Rổ / Sọt nhựa (Úp ngược)</option>
                   <option value="cylinder">🥫 Hình trụ / Chai / Lon</option>
                   <option value="rod">🎋 Thanh dài / Gậy (Cắm ngọn)</option>
                   <option value="plate">🪵 Tấm phẳng (Khóa tầng)</option>
@@ -1225,6 +1407,8 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
             <small>Thêm nhanh vật dụng hay gặp tại trạm:</small>
           </div>
           <div className="brick-preset-chips">
+            <button type="button" onClick={() => handleQuickAddPreset(11)}>+ 🪑 Ghế nhựa</button>
+            <button type="button" onClick={() => handleQuickAddPreset(12)}>+ 🧺 Rổ nhựa</button>
             <button type="button" onClick={() => handleQuickAddPreset(1)}>+ Gạch thẻ</button>
             <button type="button" onClick={() => handleQuickAddPreset(3)}>+ Chai rỗng</button>
             <button type="button" onClick={() => handleQuickAddPreset(6)}>+ Gậy tre 1.2m</button>
@@ -1284,9 +1468,9 @@ const BrickTower3DModalInner: React.FC<BrickTower3DModalProps> = ({
               type="button"
               className={showStressHeatmap ? 'is-heatmap-on' : ''}
               onClick={() => setShowStressHeatmap((v) => !v)}
-              title="Tô màu phân bố ứng suất chịu lực trên từng tầng gạch (Xanh: Dư tải • Vàng: Chịu tải cao • Đỏ: Quá tải)"
+              title="Hiện đỏ các tầng/vùng đang gánh lực nén & mô-men lật căng nhất trên tháp 3D"
             >
-              🔥 Màu chịu lực
+              {showStressHeatmap ? '🔴 Vùng chịu lực: BẬT' : '⚪ Vùng chịu lực'}
             </button>
 
             <button
