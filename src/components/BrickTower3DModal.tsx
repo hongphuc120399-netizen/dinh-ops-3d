@@ -242,29 +242,31 @@ export const BrickTower3DModal: React.FC<BrickTower3DModalProps> = React.memo(
       setShowCustomForm(false);
     };
 
-    const handleOptimizeForCurrentLoad = () => {
+    const handleOptimizeForCurrentLoad = (targetMode?: TowerBuildMode) => {
+      const nextMode: TowerBuildMode =
+        targetMode ?? (buildMode === 'naive' ? 'max_solid' : buildMode);
       const sameEnv =
         designEnv.beaufortLevel === liveEnv.beaufortLevel &&
         Math.abs(designEnv.tiltDeg - liveEnv.tiltDeg) < 0.05 &&
         Math.abs(designEnv.shakeG - liveEnv.shakeG) < 0.002;
+      const sameMode = buildMode === nextMode;
 
       setPhysicsPaused(false);
       setVisibleUpToCourse(null);
       setAutoSwitchOnCollapse(true);
 
-      if (buildMode === 'naive') {
-        setBuildMode('optimal');
+      if (!sameMode) {
+        setBuildMode(nextMode);
         setDesignEnv(liveEnv);
       } else if (!sameEnv) {
         setDesignEnv(liveEnv);
-      } else if (safeCandIdx + 1 < candidateLadder.length) {
-        // Already calibrated for this load — advance immediately to the next sturdier architecture!
+      } else if (physCollapsed && safeCandIdx + 1 < candidateLadder.length) {
+        // Already calibrated for this load and collapsed — advance immediately to the next sturdier architecture!
         setRejectedCount((c) => c + 1);
         setCandidateIdx(safeCandIdx + 1);
       } else {
-        // Reached bottom of optimal ladder -> switch to Fortress mode for maximum stability
-        setBuildMode('fortress');
-        setDesignEnv(liveEnv);
+        setCandidateIdx(0);
+        setRejectedCount(0);
       }
       setReplaySeq((s) => s + 1);
       if (navigator.vibrate) navigator.vibrate(22);
@@ -936,15 +938,23 @@ export const BrickTower3DModal: React.FC<BrickTower3DModalProps> = React.memo(
                 type="button"
                 className={buildMode === 'optimal' ? 'active' : ''}
                 onClick={() => setBuildMode('optimal')}
-                title="Tự động xếp cao nhất mà vẫn đứng vững trong vật lý thật"
+                title="Ưu tiên từng cm chiều cao tuyệt đối (tiết kiệm gạch)"
               >
                 🏆 Cao Nhất
               </button>
               <button
                 type="button"
+                className={buildMode === 'max_solid' ? 'active-max-solid' : ''}
+                onClick={() => setBuildMode('max_solid')}
+                title="Đạt trần chiều cao tối đa đứng được, đồng thời chọn kết cấu vững nhất + đắp toàn bộ gạch dư ốp kè khóa cứng 4 mặt chân móng!"
+              >
+                💎 Cao &amp; Chắc Nhất
+              </button>
+              <button
+                type="button"
                 className={buildMode === 'fortress' ? 'active' : ''}
                 onClick={() => setBuildMode('fortress')}
-                title="Ưu tiên siêu vững chống bão & rung mạnh"
+                title="Hạ thấp trọng tâm dạng lô cốt chống bão mạnh"
               >
                 🛡️ Siêu Vững
               </button>
@@ -954,7 +964,7 @@ export const BrickTower3DModal: React.FC<BrickTower3DModalProps> = React.memo(
                 onClick={() => setBuildMode('naive')}
                 title="Xếp chồng thẳng 1 cột để xem vật lý 3D sập đổ thực tế!"
               >
-                ⚡ Xếp Thẳng (Thử Sập)
+                ⚡ Thử Sập
               </button>
             </div>
             <button type="button" className="ar-close-btn" onClick={onClose}>
@@ -1268,7 +1278,7 @@ export const BrickTower3DModal: React.FC<BrickTower3DModalProps> = React.memo(
                       <button
                         type="button"
                         className="primary-action-btn"
-                        onClick={handleOptimizeForCurrentLoad}
+                        onClick={() => handleOptimizeForCurrentLoad()}
                       >
                         {canAdvanceCandidate
                           ? `✨ Thử ngay Kiểu #${safeCandIdx + 2} vững hơn`
@@ -1424,13 +1434,23 @@ export const BrickTower3DModal: React.FC<BrickTower3DModalProps> = React.memo(
                   </button>
                 </div>
 
-                {/* AUTO-OPTIMIZE BUTTON + LIVE AUTO-ADAPT CHECK */}
+                {/* MAX HEIGHT + MAX SOLIDITY AT THAT HEIGHT BUTTON */}
                 <button
                   type="button"
-                  className="primary-action-btn full-w"
-                  onClick={handleOptimizeForCurrentLoad}
+                  className="brick-maxsolid-btn"
+                  onClick={() => handleOptimizeForCurrentLoad('max_solid')}
+                  title="Giữ mức chiều cao tối đa đứng được, đồng thời chọn chân rộng nhất & gom toàn bộ gạch dư đắp kè khóa cứng 4 mặt chân tháp!"
                 >
-                  ✨ Tự Xếp Cao Nhất Chịu Gió Cấp {testBeaufort} &amp; {effectiveTiltDeg.toFixed(1)}°
+                  💎 Cao Nhất Nhưng Chắc Nhất Ở Chiều Cao Đó
+                </button>
+
+                {/* AUTO-OPTIMIZE CURRENT MODE BUTTON + LIVE AUTO-ADAPT CHECK */}
+                <button
+                  type="button"
+                  className="secondary-action-btn full-w"
+                  onClick={() => handleOptimizeForCurrentLoad()}
+                >
+                  ✨ Tính Lại Theo Gió Cấp {testBeaufort} &amp; Dốc {effectiveTiltDeg.toFixed(1)}°
                 </button>
 
                 <label className="mission-check-row">

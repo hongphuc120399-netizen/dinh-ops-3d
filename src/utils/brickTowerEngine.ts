@@ -32,7 +32,7 @@ export interface EnvironmentLoadConfig {
   shakeG: number;
 }
 
-export type TowerBuildMode = 'optimal' | 'fortress' | 'naive';
+export type TowerBuildMode = 'optimal' | 'max_solid' | 'fortress' | 'naive';
 
 export interface PlacedPart3D {
   id: string;
@@ -1146,10 +1146,34 @@ function evaluateCandidateFast(
   }
 
   let ballastMassKg = 0;
-  const ballastRadiusM = (courses[0]?.supportRadiusM ?? 0.1) + 0.06;
+  let ballastRadiusM = (courses[0]?.supportRadiusM ?? 0.1) + 0.06;
   if (mode !== 'naive') {
     for (const b of pools.ballasts) ballastMassKg += b.massKg;
     for (const h of pools.heavyCyls) ballastMassKg += h.massKg;
+  }
+
+  if ((mode === 'max_solid' || mode === 'fortress') && blockCursor + 2 <= pools.blocks.length && courses.length >= 2) {
+    const spareBricks = pools.blocks.length - blockCursor;
+    const refB = pools.blocks[blockCursor];
+    const { tM: btM, hM: bhM } = getBlockDimsForOrient(refB, 'flat');
+    const maxAllowedH = Math.min(yCursor * 0.62, bhM * 4);
+    const maxRing0 = Math.max(0, Math.floor((maxAllowedH + 0.001) / bhM));
+    const buttressLayers = Math.min(maxRing0, Math.max(1, Math.floor(spareBricks / 4)));
+    if (buttressLayers >= 1) {
+      const buttressH = buttressLayers * bhM;
+      const usedForButtress = Math.min(spareBricks, buttressLayers * 4 + Math.max(0, buttressLayers - 1) * 4);
+      let spareMass = 0;
+      for (let s = 0; s < usedForButtress; s++) {
+        spareMass += pools.blocks[blockCursor + s].massKg;
+      }
+      ballastMassKg += spareMass;
+      ballastRadiusM = Math.max(ballastRadiusM, (courses[0]?.supportRadiusM ?? 0.09) + btM * 0.85);
+      for (let ci = 0; ci < courses.length; ci++) {
+        if (courses[ci].yBottom < buttressH - 0.01) {
+          courses[ci].supportRadiusM += btM * (ci === 0 ? 0.62 : 0.38);
+        }
+      }
+    }
   }
 
   const guyWireMomentNm = hasLongRope && mode !== 'naive' && courses.length >= 3 ? 18.5 : 0;
@@ -1559,9 +1583,153 @@ function materializeWinningTower(
     }
   }
 
-  // Non-Clipping Base Ballasts & Heavy Full Bottles (clears ALL overhanging plates & bricks in [0..ancHeight]!)
-  let ballastMassKg = 0;
-  let ballastRadiusM = (courses[0]?.supportRadiusM ?? 0.1) + 0.06;
+  // Non-Clipping 4-Sided Stepped Pyramid Brick Buttress Skirt (for 'max_solid' & 'fortress' when spare bricks remain!)
+  let buttressMassKg = 0;
+  let buttressOuterR = 0;
+  if ((mode === 'max_solid' || mode === 'fortress') && blockCursor + 2 <= pools.blocks.length && courses.length >= 2) {
+    const refB = pools.blocks[blockCursor];
+    const { lM: blM, tM: btM, hM: bhM } = getBlockDimsForOrient(refB, 'flat');
+    const gap = 0.0025;
+
+    // Cap buttress height below any wide overhanging plate and at most 55% of masonry height (max 4 flat courses)
+    let maxAllowedH = Math.min(yCursor * 0.62, bhM * 4);
+    for (const p of allParts) {
+      if (p.kind === 'plate' && p.y - p.sy * 0.5 > bhM * 0.9) {
+        maxAllowedH = Math.min(maxAllowedH, p.y - p.sy * 0.5 - 0.004);
+        break;
+      }
+    }
+    const maxRing0Courses = Math.max(0, Math.floor((maxAllowedH + 0.001) / bhM));
+
+    if (maxRing0Courses >= 1) {
+      const spanH = maxRing0Courses * bhM;
+      let reachX = 0.04;
+      let reachZ = 0.04;
+      for (const p of allParts) {
+        if (p.kind === 'binder') continue;
+        const pBot = p.y - p.sy * 0.5;
+        const pTop = p.y + p.sy * 0.5;
+        if (pBot < spanH - 0.001 && pTop > 0.001) {
+          if (p.kind === 'cylinder' || p.kind === 'rod') {
+            reachX = Math.max(reachX, Math.abs(p.x) + p.sx * 0.5);
+            reachZ = Math.max(reachZ, Math.abs(p.z) + p.sx * 0.5);
+          } else {
+            const c = Math.abs(Math.cos(p.rotY));
+            const s = Math.abs(Math.sin(p.rotY));
+            reachX = Math.max(reachX, Math.abs(p.x) + p.sx * 0.5 * c + p.sz * 0.5 * s);
+            reachZ = Math.max(reachZ, Math.abs(p.z) + p.sx * 0.5 * s + p.sz * 0.5 * c);
+          }
+        }
+      }
+
+      // Ring 0: Inner 4-sided buttress hugging the core base (zero corner overlap guaranteed by Z >= max(reachZ, blM/2)!)
+      const xDist0 = reachX + btM * 0.5 + gap;
+      const zDist0 = Math.max(reachZ, blM * 0.5) + btM * 0.5 + gap;
+      const ring0Slots: [number, number, number, number][] = [
+        [xDist0, 0, btM, blM],   // +X (leeward priority #1!)
+        [-xDist0, 0, btM, blM],  // -X (windward #2)
+        [0, zDist0, blM, btM],   // +Z (#3)
+        [0, -zDist0, blM, btM]   // -Z (#4)
+      ];
+
+      let placedButtressCount = 0;
+      let actualRing0Courses = 0;
+      for (let lv = 0; lv < maxRing0Courses; lv++) {
+        const rem = pools.blocks.length - blockCursor;
+        const sidesToPlace = rem >= 4 ? 4 : rem >= 2 ? 2 : 0;
+        if (sidesToPlace === 0) break;
+        actualRing0Courses = lv + 1;
+        for (let si = 0; si < sidesToPlace; si++) {
+          const bItem = pools.blocks[blockCursor++];
+          addUsed(bItem.id, 1);
+          buttressMassKg += bItem.massKg;
+          placedButtressCount++;
+          const [px, pz, sx, sz] = ring0Slots[si];
+          buttressOuterR = Math.max(buttressOuterR, Math.hypot(px, pz) + btM * 0.5);
+          allParts.push({
+            id: `buttress-r0-${lv}-${si}`,
+            courseIndex: Math.min(courses.length - 1, lv),
+            itemName: bItem.name,
+            kind: 'block',
+            roleLabel: 'Bệ gạch ốp kè khóa cứng 4 mặt chân móng (tăng độ chắc tối đa)',
+            color: bItem.color,
+            x: px,
+            y: lv * bhM + bhM * 0.5,
+            z: pz,
+            sx,
+            sy: bhM,
+            sz,
+            rotY: 0,
+            frictionMu: bItem.frictionMu ?? 0.62,
+            massKg: bItem.massKg
+          });
+        }
+      }
+
+      // Ring 1: Stepped outer pyramid skirt if spare bricks STILL remain!
+      const maxRing1Courses = Math.max(0, actualRing0Courses - 1);
+      if (maxRing1Courses >= 1 && blockCursor + 2 <= pools.blocks.length) {
+        const xDist1 = xDist0 + btM + gap;
+        const zDist1 = Math.max(zDist0 + btM * 0.5, blM * 0.5) + btM * 0.5 + gap;
+        const ring1Slots: [number, number, number, number][] = [
+          [xDist1, 0, btM, blM],
+          [-xDist1, 0, btM, blM],
+          [0, zDist1, blM, btM],
+          [0, -zDist1, blM, btM]
+        ];
+        for (let lv = 0; lv < maxRing1Courses; lv++) {
+          const rem = pools.blocks.length - blockCursor;
+          const sidesToPlace = rem >= 4 ? 4 : rem >= 2 ? 2 : 0;
+          if (sidesToPlace === 0) break;
+          for (let si = 0; si < sidesToPlace; si++) {
+            const bItem = pools.blocks[blockCursor++];
+            addUsed(bItem.id, 1);
+            buttressMassKg += bItem.massKg;
+            placedButtressCount++;
+            const [px, pz, sx, sz] = ring1Slots[si];
+            buttressOuterR = Math.max(buttressOuterR, Math.hypot(px, pz) + btM * 0.5);
+            allParts.push({
+              id: `buttress-r1-${lv}-${si}`,
+              courseIndex: Math.min(courses.length - 1, lv),
+              itemName: bItem.name,
+              kind: 'block',
+              roleLabel: 'Bệ gạch tam cấp vòng ngoài gia cố chân đế',
+              color: bItem.color,
+              x: px,
+              y: lv * bhM + bhM * 0.5,
+              z: pz,
+              sx,
+              sy: bhM,
+              sz,
+              rotY: 0,
+              frictionMu: bItem.frictionMu ?? 0.62,
+              massKg: bItem.massKg
+            });
+          }
+        }
+      }
+
+      if (placedButtressCount > 0) {
+        const bracedH = actualRing0Courses * bhM;
+        for (let ci = 0; ci < courses.length; ci++) {
+          if (courses[ci].yBottom < bracedH - 0.01) {
+            courses[ci].supportRadiusM += btM * (ci === 0 ? 0.62 : 0.38);
+          }
+        }
+        steps.push({
+          stepNumber: steps.length + 1,
+          courseRange: [0, Math.min(courses.length - 1, Math.max(0, actualRing0Courses - 1))],
+          title: `Ốp kè ${placedButtressCount} viên gạch dư thành bệ tam cấp khóa 4 mặt chân móng`,
+          detail: `Tận dụng toàn bộ gạch còn dư xếp ép sát 4 mặt Đông-Tây-Nam-Bắc quanh tầng đế (cao ${(bracedH * 100).toFixed(0)}cm) để mở rộng chân đế gấp đôi mà không giảm 1cm chiều cao nào!`,
+          heightReachedCm: Number((yCursor * 100 + spireAddedCm).toFixed(1))
+        });
+      }
+    }
+  }
+
+  // Non-Clipping Base Ballasts & Heavy Full Bottles (clears ALL overhanging plates, buttresses & bricks in [0..ancHeight]!)
+  let ballastMassKg = buttressMassKg;
+  let ballastRadiusM = Math.max((courses[0]?.supportRadiusM ?? 0.1) + 0.06, buttressOuterR);
   if (mode !== 'naive') {
     const anchors = [...pools.ballasts, ...pools.heavyCyls];
     for (let i = 0; i < anchors.length; i++) {
@@ -1952,7 +2120,7 @@ export function solveRankedBrickTowers(
     candidates.push({ tiers: [{ pattern: 'single1', orient: o, maxCourses: 999 }] });
   }
 
-  const targetSF = mode === 'fortress' ? 1.85 : 1.22;
+  const targetSF = mode === 'fortress' ? 1.85 : mode === 'max_solid' ? 1.45 : 1.22;
 
   interface ScoredEntry {
     bp: TaperedBlueprint;
@@ -1975,15 +2143,21 @@ export function solveRankedBrickTowers(
   ) => {
     if (heightCm <= 0) return;
     const patKey = bp.tiers.map((t) => `${t.pattern[0]}${t.orient[0]}`).join('');
-    // Bucket heights in 4cm steps per pattern family so every ladder step is visibly & structurally distinct!
-    const hBucket = Math.round(heightCm / 4);
-    const sig = `${patKey}-${hBucket}-${keptRod ? 'R' : 'M'}-${keptLightCyls}`;
+    const hBucket = Math.round(heightCm / 3);
+    // In 'max_solid', deduplicate strictly per height rung & keep ONLY the highest-SF (sturdiest!) architecture at each height!
+    const sig =
+      mode === 'max_solid'
+        ? `H${hBucket}-${keptRod ? 'R' : 'M'}`
+        : `${patKey}-${Math.round(heightCm / 4)}-${keptRod ? 'R' : 'M'}-${keptLightCyls}`;
+    const wideBaseBonus = bp.tiers[0].pattern === 'ring4' ? 0.18 : bp.tiers[0].pattern === 'tri3' ? 0.12 : 0;
     const score =
       mode === 'fortress'
         ? heightCm * 0.65 + Math.min(4.5, minSF) * 45
-        : heightCm + Math.min(2.5, minSF) * 2.0;
+        : mode === 'max_solid'
+          ? heightCm + Math.min(6.0, minSF + wideBaseBonus) * 6.5
+          : heightCm + Math.min(2.5, minSF) * 2.0;
     const prev = bestBySig.get(sig);
-    if (!prev || minSF > prev.minSF) {
+    if (!prev || minSF + wideBaseBonus > prev.minSF) {
       bestBySig.set(sig, { bp, heightCm, minSF, keptLightCyls, keptRod, score, sig });
     }
   };
@@ -2030,9 +2204,22 @@ export function solveRankedBrickTowers(
     return out;
   };
 
-  const passing = allEntries
-    .filter((e) => e.minSF >= targetSF)
-    .sort((a, b) => b.score - a.score);
+  const passingRaw = allEntries.filter((e) => e.minSF >= targetSF);
+  const peakHeightCm = passingRaw.length > 0 ? Math.max(...passingRaw.map((e) => e.heightCm)) : 0;
+  const peakBandCm = Math.max(4.0, peakHeightCm * 0.04);
+
+  // In 'max_solid' ("Cao nhất, nhưng chắc nhất có thể so với chiều cao đó"):
+  // Among all designs reaching the peak height band (within ~4% of peakHeightCm), rank STRICTLY by highest Safety Factor!
+  const passing = [...passingRaw].sort((a, b) => {
+    if (mode === 'max_solid') {
+      const aInPeak = a.heightCm >= peakHeightCm - peakBandCm ? 1 : 0;
+      const bInPeak = b.heightCm >= peakHeightCm - peakBandCm ? 1 : 0;
+      if (aInPeak !== bInPeak) return bInPeak - aInPeak;
+      if (aInPeak === 1) return b.minSF - a.minSF || b.heightCm - a.heightCm;
+      return b.heightCm - a.heightCm || b.minSF - a.minSF;
+    }
+    return b.score - a.score;
+  });
 
   const chosenMap = new Map<string, ScoredEntry>();
   if (passing.length > 0) {

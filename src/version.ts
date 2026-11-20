@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.1.14',
-  buildNumber: 202611200910,
-  builtAt: '2026-11-20T09:10:34+07:00',
-  note: "Thêm phòng thí nghiệm Xếp Gạch 3D Vật Lý Thực (cannon-es 120Hz, 100% Offline): 0% xuyên thấu vật thể, tự động đổi thử 12 phương án khi sập đến khi đứng vững, thử gió & rung lắc thật"
+  version: '1.1.15',
+  buildNumber: 202611200931,
+  builtAt: '2026-11-20T09:31:40+07:00',
+  note: "Thêm chế độ & nút '💎 Cao & Chắc Nhất': tối đa hóa độ vững tại đúng trần chiều cao cao nhất và tự động ốp kè toàn bộ gạch dư quanh 4 mặt chân móng"
 };
