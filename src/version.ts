@@ -6,8 +6,8 @@ export interface AppBuildInfo {
 }
 
 export const APP_BUILD_INFO: AppBuildInfo = {
-  version: '1.1.15',
-  buildNumber: 202611200931,
-  builtAt: '2026-11-20T09:31:40+07:00',
-  note: "Thêm chế độ & nút '💎 Cao & Chắc Nhất': tối đa hóa độ vững tại đúng trần chiều cao cao nhất và tự động ốp kè toàn bộ gạch dư quanh 4 mặt chân móng"
+  version: '1.1.16',
+  buildNumber: 202611201017,
+  builtAt: '2026-11-20T10:17:46+07:00',
+  note: "Tối ưu mượt 120Hz mô phỏng Xếp Gạch 3D & thêm phân tích Chịu Lực kết cấu (quả cân thử tải đỉnh 3D, bản đồ nhiệt ứng suất, áp suất lún nền)"
 };

@@ -30,6 +30,8 @@ export interface EnvironmentLoadConfig {
   tiltDeg: number;
   /** Dynamic horizontal shake intensity in g (0..0.35g) */
   shakeG: number;
+  /** Extra vertical payload weight placed on the crown in kg (0..30kg) */
+  topPayloadKg?: number;
 }
 
 export type TowerBuildMode = 'optimal' | 'max_solid' | 'fortress' | 'naive';
@@ -73,8 +75,37 @@ export interface CourseJointCheck {
   restoringMomentNm: number;
   safetyFactor: number;
   slidingSafetyFactor: number;
+  materialSafetyFactor?: number;
+  axialLoadKg?: number;
+  contactStressKgCm2?: number;
+  utilizationPct?: number;
   failed: boolean;
-  failureMode: 'none' | 'overturn' | 'slide';
+  failureMode: 'none' | 'overturn' | 'slide' | 'crush';
+}
+
+export interface LoadBearingReport {
+  /** Extra payload currently placed on the crown (kg) */
+  appliedTopPayloadKg: number;
+  /** Maximum extra payload (kg) the crown can carry under current wind/tilt/shake before any failure */
+  maxSafeTopPayloadKg: number;
+  /** Which physical mechanism limits the top payload */
+  limitingComponent: string;
+  /** Total vertical downward force at ground foundation (N) */
+  baseAxialForceN: number;
+  /** Total mass pressing on ground including tower, buttresses & top payload (kg) */
+  baseTotalWeightKg: number;
+  /** Effective base contact area on ground (cm²) */
+  baseContactAreaCm2: number;
+  /** Ground bearing pressure (kg/cm²) */
+  groundPressureKgCm2: number;
+  /** Soil bearing assessment for forest / mountain ground */
+  groundVerdict: string;
+  /** Peak combined stress/stability utilization across all courses (0..100+%) */
+  peakUtilizationPct: number;
+  /** Per-course utilization % (0..120) for 3D Stress Heatmap */
+  courseUtilizationPct: number[];
+  /** Non-null if a bottle/plate/rod physically crushes or buckles under vertical load */
+  crushFailedCourseIndex: number | null;
 }
 
 export interface BuildStepGuide {
@@ -99,6 +130,9 @@ export interface InternalCourseSummary {
   massKg: number;
   frictionMu: number;
   binderMomentNm: number;
+  bearingAreaCm2?: number;
+  crushCapacityKg?: number;
+  courseLabel?: string;
 }
 
 export interface TowerSolution {
@@ -124,6 +158,7 @@ export interface TowerSolution {
   parts: PlacedPart3D[];
   jointChecks: CourseJointCheck[];
   steps: BuildStepGuide[];
+  loadReport: LoadBearingReport;
   /** Cached structural skeleton for instant (<0.1ms) live 120Hz wind/shake slider re-evaluation */
   _skeleton: {
     courses: InternalCourseSummary[];
@@ -405,6 +440,9 @@ function computeCourseMetricsOnly(
   let totalMass = 0;
   for (let i = 0; i < nBricks; i++) totalMass += bricks[startIdx + i].massKg;
   const mu = ref.frictionMu ?? 0.62;
+  const singleAreaCm2 = (lM * 100) * (tM * 100);
+  // Hollow clay bricks ~16 kg/cm² net compressive strength, solid bricks ~60 kg/cm²
+  const brickCrushKg = nBricks * singleAreaCm2 * 16;
 
   if (pattern === 'ring4') {
     const outerSpan = lM + tM + INTRA_GAP_M;
@@ -421,7 +459,10 @@ function computeCourseMetricsOnly(
       dragCoeff: 1.3,
       massKg: totalMass,
       frictionMu: mu,
-      binderMomentNm: hasTiedBand ? 2.4 : 0
+      binderMomentNm: hasTiedBand ? 2.4 : 0,
+      bearingAreaCm2: nBricks * singleAreaCm2,
+      crushCapacityKg: brickCrushKg,
+      courseLabel: ref.name
     };
   }
   if (pattern === 'tri3') {
@@ -439,7 +480,10 @@ function computeCourseMetricsOnly(
       dragCoeff: 1.22,
       massKg: totalMass,
       frictionMu: mu,
-      binderMomentNm: hasTiedBand ? 2.0 : 0
+      binderMomentNm: hasTiedBand ? 2.0 : 0,
+      bearingAreaCm2: nBricks * singleAreaCm2,
+      crushCapacityKg: brickCrushKg,
+      courseLabel: ref.name
     };
   }
   if (pattern === 'crib2' || pattern === 'crib2_bridge') {
@@ -459,7 +503,10 @@ function computeCourseMetricsOnly(
       dragCoeff: 1.26,
       massKg: totalMass,
       frictionMu: mu,
-      binderMomentNm: hasTiedBand ? 1.8 : 0
+      binderMomentNm: hasTiedBand ? 1.8 : 0,
+      bearingAreaCm2: nBricks * singleAreaCm2,
+      crushCapacityKg: brickCrushKg,
+      courseLabel: ref.name
     };
   }
   // Account for multi-joint P-Delta corner rounding on narrow single-brick columns so statics match real cannon-es!
@@ -475,7 +522,10 @@ function computeCourseMetricsOnly(
     dragCoeff: 1.28,
     massKg: totalMass,
     frictionMu: mu,
-    binderMomentNm: hasTiedBand ? 1.1 : 0
+    binderMomentNm: hasTiedBand ? 1.1 : 0,
+    bearingAreaCm2: singleAreaCm2,
+    crushCapacityKg: brickCrushKg,
+    courseLabel: ref.name
   };
 }
 
@@ -809,6 +859,8 @@ function evaluateSkeletonStability(
   failCourseIndex: number | null;
   failElevationM: number;
   failReason: string | null;
+  crushFailedCourseIndex: number | null;
+  rodEulerLimitKg: number;
 } {
   const n = courses.length;
   if (n === 0) {
@@ -818,7 +870,9 @@ function evaluateSkeletonStability(
       minSlideSF: 99,
       failCourseIndex: null,
       failElevationM: 0,
-      failReason: null
+      failReason: null,
+      crushFailedCourseIndex: null,
+      rodEulerLimitKg: 999
     };
   }
 
@@ -834,18 +888,44 @@ function evaluateSkeletonStability(
   const cosTilt = Math.cos(tiltRad);
   const lateralAccelRatio = sinTilt + env.shakeG * daf;
 
-  let suffixMass = 0;
-  let suffixWeightedY = 0;
-  let suffixWindForce = 0;
-  let suffixWindForceY = 0;
-
+  const topPayloadKg = Math.max(0, env.topPayloadKg ?? 0);
   const rod0 = rodParts[0];
+  const topTowerY = rod0 ? Math.max(totalHeightM, rod0.y + rod0.sy * 0.5) : totalHeightM;
+
+  // Euler Column Buckling Limit for Spire Rod if top payload sits on the rod!
+  let rodEulerLimitKg = 999;
+  if (rod0 && rod0.y + rod0.sy * 0.5 > totalHeightM + 0.02) {
+    const freeLenM = Math.max(0.08, rod0.y + rod0.sy * 0.5 - totalHeightM);
+    const dM = Math.max(0.012, rod0.sx);
+    const inertiaM4 = (Math.PI * Math.pow(dM, 4)) / 64;
+    // E_wood_bamboo ≈ 9.5 GPa, effective length factor K = 2.1 (cantilever spire) + eccentricity knockdown 0.35
+    const eulerN = (Math.PI * Math.PI * 9.5e9 * inertiaM4) / Math.pow(2.1 * freeLenM, 2);
+    rodEulerLimitKg = Math.max(1.2, (eulerN * 0.35) / GRAVITY);
+  }
+
+  let suffixMass = topPayloadKg;
+  let suffixWeightedY = topPayloadKg * (topTowerY + 0.03);
+  let suffixWindForce = topPayloadKg > 0.05 ? qWind * 1.1 * (0.09 * 0.08) : 0;
+  let suffixWindForceY = suffixWindForce * (topTowerY + 0.04);
+
   const jointChecks: CourseJointCheck[] = recordJoints ? new Array(n) : [];
   let minSF = Infinity;
   let minSlideSF = Infinity;
   let failCourseIndex: number | null = null;
   let failElevationM = 0;
   let failReason: string | null = null;
+  let crushFailedCourseIndex: number | null = null;
+
+  // Check if top payload buckles the spire rod first!
+  if (topPayloadKg > rodEulerLimitKg) {
+    minSF = Number((rodEulerLimitKg / topPayloadKg).toFixed(2));
+    failCourseIndex = n - 1;
+    failElevationM = totalHeightM;
+    crushFailedCourseIndex = n - 1;
+    if (recordJoints) {
+      failReason = `Gãy uốn dọc (Euler) ngọn "${rod0.itemName}" do tải đỉnh ${topPayloadKg.toFixed(1)}kg vượt giới hạn chịu uốn ${rodEulerLimitKg.toFixed(1)}kg!`;
+    }
+  }
 
   for (let i = n - 1; i >= 0; i--) {
     const c = courses[i];
@@ -875,7 +955,7 @@ function evaluateSkeletonStability(
         const midY = botY + exposedH * 0.5;
         massAbove += mPart;
         weightedY += mPart * midY;
-        rodEccentricMoment += mPart * GRAVITY * Math.abs(rod0.x);
+        rodEccentricMoment += (mPart + (topY === rod0.y + rod0.sy * 0.5 ? topPayloadKg : 0)) * GRAVITY * Math.abs(rod0.x);
         const fRod = qWind * 0.9 * (rod0.sx * exposedH);
         windForceHoriz += fRod;
         windMoment += fRod * Math.max(0.01, midY - zCut);
@@ -908,8 +988,17 @@ function evaluateSkeletonStability(
     const slideResistance = c.frictionMu * normalForce + (c.binderMomentNm > 0 ? 12 : 0);
     const slideSf = horizForce > 1e-5 ? slideResistance / horizForce : 99;
 
-    const effectiveSf = Math.min(sf, slideSf);
+    // Material Crush / Hollow-Span Bending Check!
+    const crushCapKg = c.crushCapacityKg ?? 1800;
+    // Load pressing ON top of course `i` is `massAbove - c.massKg` (plus self-weight at bottom of course `i`)
+    const loadOnCourseKg = Math.max(0.01, massAbove - c.massKg * 0.5);
+    const matSf = crushCapKg / loadOnCourseKg;
+
+    const effectiveSf = Math.min(sf, slideSf, matSf);
     if (slideSf < minSlideSF) minSlideSF = slideSf;
+    if (matSf < 1.0 && (crushFailedCourseIndex === null || i < crushFailedCourseIndex)) {
+      crushFailedCourseIndex = i;
+    }
 
     if (effectiveSf < minSF || (effectiveSf < 1.0 && failCourseIndex !== null && i < failCourseIndex)) {
       if (effectiveSf < minSF) minSF = effectiveSf;
@@ -918,29 +1007,44 @@ function evaluateSkeletonStability(
         failElevationM = zCut;
         if (recordJoints) {
           failReason =
-            slideSf < sf
-              ? `Trượt ngang tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do vật nhẹ/trơn gặp gió mạnh!`
-              : windMoment >= shakeMoment
-                ? `Đổ lật tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do sức gió vượt mô-men giữ chân đế!`
-                : `Đổ lật tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do độ nghiêng / rung lắc vượt giới hạn!`;
+            matSf <= sf && matSf <= slideSf
+              ? `Quá tải chịu lực vật liệu tại tầng ${i + 1} (${c.courseLabel ?? 'vật mỏng'}): đè ${loadOnCourseKg.toFixed(1)}kg vượt ngưỡng bẹp/uốn ${crushCapKg.toFixed(1)}kg!`
+              : slideSf < sf
+                ? `Trượt ngang tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do vật nhẹ/trơn gặp gió mạnh!`
+                : windMoment >= shakeMoment
+                  ? `Đổ lật tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do sức gió vượt mô-men giữ chân đế!`
+                  : `Đổ lật tại tầng ${i + 1} (cao ${(zCut * 100).toFixed(0)}cm) do tải trọng / độ nghiêng / rung lắc vượt giới hạn!`;
         }
       }
     }
 
     if (recordJoints) {
+      const areaCm2 = Math.max(4, c.bearingAreaCm2 ?? 120);
+      const utilPct = Math.min(150, Math.round((1 / Math.max(0.08, effectiveSf)) * 100));
       jointChecks[i] = {
         courseIndex: i,
         elevationM: zCut,
         effectiveRadiusM: rSupport,
-        massAboveKg: massAbove,
+        massAboveKg: Number(massAbove.toFixed(2)),
         windMomentNm: windMoment,
         shakeMomentNm: shakeMoment,
         imperfectionMomentNm: imperfectionMoment,
         restoringMomentNm: restoringMoment,
         safetyFactor: Number(effectiveSf.toFixed(2)),
         slidingSafetyFactor: Number(slideSf.toFixed(2)),
+        materialSafetyFactor: Number(Math.min(99, matSf).toFixed(2)),
+        axialLoadKg: Number(massAbove.toFixed(2)),
+        contactStressKgCm2: Number((massAbove / areaCm2).toFixed(3)),
+        utilizationPct: utilPct,
         failed: effectiveSf < 1.0,
-        failureMode: effectiveSf >= 1.0 ? 'none' : slideSf < sf ? 'slide' : 'overturn'
+        failureMode:
+          effectiveSf >= 1.0
+            ? 'none'
+            : matSf <= sf && matSf <= slideSf
+              ? 'crush'
+              : slideSf < sf
+                ? 'slide'
+                : 'overturn'
       };
     }
   }
@@ -951,7 +1055,118 @@ function evaluateSkeletonStability(
     minSlideSF: Number.isFinite(minSlideSF) ? Number(minSlideSF.toFixed(2)) : 99,
     failCourseIndex,
     failElevationM,
-    failReason
+    failReason,
+    crushFailedCourseIndex,
+    rodEulerLimitKg
+  };
+}
+
+function buildLoadBearingReport(
+  courses: InternalCourseSummary[],
+  rodParts: PlacedPart3D[],
+  ballastMassKg: number,
+  ballastRadiusM: number,
+  guyWireMomentNm: number,
+  guyWireAttachY: number,
+  env: EnvironmentLoadConfig,
+  evalRes: ReturnType<typeof evaluateSkeletonStability>
+): LoadBearingReport {
+  const appliedTopPayloadKg = Math.max(0, env.topPayloadKg ?? 0);
+  if (courses.length === 0) {
+    return {
+      appliedTopPayloadKg,
+      maxSafeTopPayloadKg: 0,
+      limitingComponent: 'Chưa có vật liệu',
+      baseAxialForceN: 0,
+      baseTotalWeightKg: 0,
+      baseContactAreaCm2: 0,
+      groundPressureKgCm2: 0,
+      groundVerdict: 'Chưa có tải',
+      peakUtilizationPct: 0,
+      courseUtilizationPct: [],
+      crushFailedCourseIndex: null
+    };
+  }
+
+  // Binary search (10 steps = < 0.03ms!) for exact maximum safe top payload (0..60 kg) under current wind + tilt + shake!
+  let lo = 0;
+  let hi = 60;
+  const zeroCheck = evaluateSkeletonStability(
+    courses,
+    rodParts,
+    ballastMassKg,
+    ballastRadiusM,
+    guyWireMomentNm,
+    guyWireAttachY,
+    { ...env, topPayloadKg: 0 },
+    false
+  );
+  let maxSafeTopPayloadKg = 0;
+  let limitingComponent = 'Đã quá tải gió/nghiêng ngay cả khi chưa đặt vật nặng';
+  if (zeroCheck.minSF >= 1.0) {
+    for (let it = 0; it < 11; it++) {
+      const mid = (lo + hi) * 0.5;
+      const r = evaluateSkeletonStability(
+        courses,
+        rodParts,
+        ballastMassKg,
+        ballastRadiusM,
+        guyWireMomentNm,
+        guyWireAttachY,
+        { ...env, topPayloadKg: mid },
+        false
+      );
+      if (r.minSF >= 1.05) lo = mid;
+      else hi = mid;
+    }
+    maxSafeTopPayloadKg = Number(lo.toFixed(1));
+    const probeOver = evaluateSkeletonStability(
+      courses,
+      rodParts,
+      ballastMassKg,
+      ballastRadiusM,
+      guyWireMomentNm,
+      guyWireAttachY,
+      { ...env, topPayloadKg: Math.max(lo * 1.2 + 1.5, hi + 1.0) },
+      true
+    );
+    limitingComponent =
+      probeOver.failReason?.replace(/!$/, '') ??
+      (rodParts.length > 0
+        ? `Uốn dọc ngọn ${rodParts[0].itemName} (${evalRes.rodEulerLimitKg.toFixed(1)}kg)`
+        : 'Ổn định chống lật toàn tháp (> 60kg)');
+  }
+
+  const baseAxialKg = (evalRes.jointChecks[0]?.massAboveKg ?? 0) + ballastMassKg;
+  const baseForceN = Number((baseAxialKg * GRAVITY).toFixed(1));
+  const coreAreaCm2 = courses[0]?.bearingAreaCm2 ?? 144;
+  // Buttress bricks & ballast stones also spread ground load
+  const extraButtressAreaCm2 = ballastMassKg > 1.5 ? Math.round((ballastMassKg / 1.25) * 110) : 0;
+  const totalBaseAreaCm2 = Math.max(16, Math.round(coreAreaCm2 + extraButtressAreaCm2));
+  const groundPressureKgCm2 = Number((baseAxialKg / totalBaseAreaCm2).toFixed(3));
+  const groundVerdict =
+    groundPressureKgCm2 <= 0.35
+      ? 'Đất rừng ẩm / cỏ mềm chịu tốt, không lo lún lệch'
+      : groundPressureKgCm2 <= 0.85
+        ? 'Đất nện đường mòn chịu ổn (tránh đặt trên bùn xốp)'
+        : 'Áp lực chân khá lớn — nên lót đá dẹt / tấm ván dưới tầng 1 chống lún!';
+
+  const courseUtilizationPct = evalRes.jointChecks.map((jc) => jc?.utilizationPct ?? 0);
+  const peakUtilizationPct =
+    courseUtilizationPct.length > 0 ? Math.max(...courseUtilizationPct) : 0;
+
+  return {
+    appliedTopPayloadKg,
+    maxSafeTopPayloadKg,
+    limitingComponent,
+    baseAxialForceN: baseForceN,
+    baseTotalWeightKg: Number(baseAxialKg.toFixed(2)),
+    baseContactAreaCm2: totalBaseAreaCm2,
+    groundPressureKgCm2,
+    groundVerdict,
+    peakUtilizationPct,
+    courseUtilizationPct,
+    crushFailedCourseIndex: evalRes.crushFailedCourseIndex
   };
 }
 
@@ -968,6 +1183,16 @@ export function evaluateTowerUnderLoad(sol: TowerSolution, env: EnvironmentLoadC
     env,
     true
   );
+  const loadReport = buildLoadBearingReport(
+    sk.courses,
+    sk.rodParts,
+    sk.ballastMassKg,
+    sk.ballastRadiusM,
+    sk.guyWireMomentNm,
+    sk.guyWireAttachY,
+    env,
+    evalRes
+  );
   return {
     ...sol,
     minSafetyFactor: evalRes.minSF,
@@ -976,7 +1201,8 @@ export function evaluateTowerUnderLoad(sol: TowerSolution, env: EnvironmentLoadC
     failCourseIndex: evalRes.failCourseIndex,
     failElevationM: evalRes.failElevationM,
     failReason: evalRes.failReason,
-    jointChecks: evalRes.jointChecks
+    jointChecks: evalRes.jointChecks,
+    loadReport
   };
 }
 
@@ -1006,6 +1232,11 @@ function evaluateCandidateFast(
     const sz = pl.widthCm * 0.01;
     const sy = Math.max(0.006, pl.heightCm * 0.01);
     const cIdx = courses.length;
+    const holeSpanCm = cIdx > 0 ? courses[cIdx - 1].clearHoleRadiusM * 200 : 0;
+    const plateCrushKg =
+      holeSpanCm > 2.0
+        ? Math.max(3.5, ((Math.min(pl.lengthCm, pl.widthCm) * Math.pow(Math.max(0.5, pl.heightCm), 1.65)) / holeSpanCm) * 3.8)
+        : 65;
     if (cIdx > 0) courses[cIdx - 1].supportRadiusM *= 1.12;
     const prevR = cIdx > 0 ? courses[cIdx - 1].supportRadiusM : Math.min(sx, sz) * 0.45;
     courses.push({
@@ -1019,7 +1250,10 @@ function evaluateCandidateFast(
       dragCoeff: 1.2,
       massKg: pl.massKg,
       frictionMu: pl.frictionMu ?? 0.52,
-      binderMomentNm: 0.8
+      binderMomentNm: 0.8,
+      bearingAreaCm2: pl.lengthCm * pl.widthCm * 0.5,
+      crushCapacityKg: plateCrushKg,
+      courseLabel: pl.name
     });
     yCursor += sy;
     return true;
@@ -1226,7 +1460,10 @@ function evaluateCandidateFast(
       dragCoeff: 0.85,
       massKg: cyl.massKg,
       frictionMu: useTape ? 0.65 : (cyl.frictionMu ?? 0.34),
-      binderMomentNm: useTape ? 2.6 : 0
+      binderMomentNm: useTape ? 2.6 : 0,
+      bearingAreaCm2: Math.PI * Math.pow(cyl.widthCm * 0.5, 2),
+      crushCapacityKg: cyl.massKg < 0.12 ? 7.5 : cyl.massKg < 0.42 ? 24 : 38,
+      courseLabel: cyl.name
     };
     courses.push(candidateCourse);
     const check = evaluateSkeletonStability(
@@ -1333,6 +1570,11 @@ function materializeWinningTower(
     const sz = pl.widthCm * 0.01;
     const sy = Math.max(0.006, pl.heightCm * 0.01);
     const cIdx = courses.length;
+    const holeSpanCm = cIdx > 0 ? courses[cIdx - 1].clearHoleRadiusM * 200 : 0;
+    const plateCrushKg =
+      holeSpanCm > 2.0
+        ? Math.max(3.5, ((Math.min(pl.lengthCm, pl.widthCm) * Math.pow(Math.max(0.5, pl.heightCm), 1.65)) / holeSpanCm) * 3.8)
+        : 65;
     if (cIdx > 0) courses[cIdx - 1].supportRadiusM *= 1.12;
     const prevR = cIdx > 0 ? courses[cIdx - 1].supportRadiusM : Math.min(sx, sz) * 0.45;
     courses.push({
@@ -1346,7 +1588,10 @@ function materializeWinningTower(
       dragCoeff: 1.2,
       massKg: pl.massKg,
       frictionMu: pl.frictionMu ?? 0.52,
-      binderMomentNm: 0.8
+      binderMomentNm: 0.8,
+      bearingAreaCm2: pl.lengthCm * pl.widthCm * 0.5,
+      crushCapacityKg: plateCrushKg,
+      courseLabel: pl.name
     });
     allParts.push({
       id: `plate-${cIdx}`,
@@ -1525,7 +1770,10 @@ function materializeWinningTower(
       dragCoeff: 0.85,
       massKg: cyl.massKg,
       frictionMu: useTape ? 0.65 : (cyl.frictionMu ?? 0.34),
-      binderMomentNm: useTape ? 2.6 : 0
+      binderMomentNm: useTape ? 2.6 : 0,
+      bearingAreaCm2: Math.PI * Math.pow(cyl.widthCm * 0.5, 2),
+      crushCapacityKg: cyl.massKg < 0.12 ? 7.5 : cyl.massKg < 0.42 ? 24 : 38,
+      courseLabel: cyl.name
     });
     allParts.push({
       id: `cyl-${cIdx}`,
@@ -1900,6 +2148,17 @@ function materializeWinningTower(
     if (u < it.count) unusedSummary.push(`${it.count - u} ${it.name}`);
   }
 
+  const loadReport = buildLoadBearingReport(
+    courses,
+    rodParts,
+    ballastMassKg,
+    ballastRadiusM,
+    guyWireMomentNm,
+    guyWireAttachY,
+    env,
+    evalRes
+  );
+
   return {
     mode,
     totalHeightCm,
@@ -1923,6 +2182,7 @@ function materializeWinningTower(
     parts: allParts,
     jointChecks: evalRes.jointChecks,
     steps,
+    loadReport,
     _skeleton: {
       courses,
       rodParts,
@@ -1973,6 +2233,19 @@ export function solveRankedBrickTowers(
         parts: [],
         jointChecks: [],
         steps: [],
+        loadReport: {
+          appliedTopPayloadKg: 0,
+          maxSafeTopPayloadKg: 0,
+          limitingComponent: 'Chưa có vật liệu',
+          baseAxialForceN: 0,
+          baseTotalWeightKg: 0,
+          baseContactAreaCm2: 0,
+          groundPressureKgCm2: 0,
+          groundVerdict: 'Chưa có tải',
+          peakUtilizationPct: 0,
+          courseUtilizationPct: [],
+          crushFailedCourseIndex: null
+        },
         _skeleton: {
           courses: [],
           rodParts: [],
@@ -1998,8 +2271,8 @@ export function solveRankedBrickTowers(
 
   const basePatterns: CoursePattern[] = ['ring4', 'tri3', 'crib2'];
   const midPatterns: CoursePattern[] = ['tri3', 'crib2', 'single1'];
-  const baseCounts = [1, 2, 3, 4, 6, 8];
-  const midCounts = [0, 1, 2, 3, 4, 6];
+  const baseCounts = [1, 2, 3, 4, 6];
+  const midCounts = [0, 1, 2, 3, 4];
 
   for (const bp of basePatterns) {
     const nB = bp === 'ring4' ? 4 : bp === 'tri3' ? 3 : 2;
