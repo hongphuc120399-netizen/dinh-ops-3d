@@ -29,6 +29,7 @@ import { CipherDecoderPanel } from './CipherDecoderPanel';
 import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
 import { TacticalSightingPanel, type PinRequestPayload } from './TacticalSightingPanel';
 import { ArRangefinderOverlay } from './ArRangefinderOverlay';
+import { BrickTower3DModal } from './BrickTower3DModal';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -521,6 +522,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
 }) => {
   const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
   const [quickArOpen, setQuickArOpen] = useState<boolean>(false);
+  const [brickLabOpen, setBrickLabOpen] = useState<boolean>(false);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
   const [backupErr, setBackupErr] = useState<string | null>(null);
   const plannedTileTotal = React.useMemo(
@@ -842,6 +844,14 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
           <div className="sheet-header-actions">
             <button
               type="button"
+              className="ar-launch-pill brick-launch-pill"
+              onClick={() => setBrickLabOpen(true)}
+              title="Mở Phòng Thí Nghiệm Xếp Tháp Gạch & Vật Dụng 3D (Tự động tính chống gió & lung lay)"
+            >
+              🧱 Xếp Gạch 3D
+            </button>
+            <button
+              type="button"
               className="ar-launch-pill"
               onClick={() => setQuickArOpen(true)}
               title="Mở Camera AR Đo Khoảng Cách toàn màn hình nằm ngang"
@@ -879,12 +889,29 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
         {tab === 'decode' && <CipherDecoderPanel onPinCoordinate={handlePinDecodedCoord} />}
 
         {tab === 'engineering' && (
-          <EngineeringToolkitPanel
-            pitchDeg={pitchDeg}
-            rollDeg={rollDeg}
-            useRealSensor={useRealSensor}
-            onToggleRealSensor={onToggleRealSensor}
-          />
+          <>
+            <div className="brick-promo-card">
+              <div>
+                <strong>🧱 Tự Động Xếp Tháp Gạch &amp; Vật Dụng 3D (Offline 100%)</strong>
+                <p>
+                  Nhập số lượng gạch + bất kỳ món đồ trạm phát → tự tính cách xếp cao nhất không đổ, xem 3D từng tầng, thử sức gió &amp; rung lắc!
+                </p>
+              </div>
+              <button
+                type="button"
+                className="primary-action-btn"
+                onClick={() => setBrickLabOpen(true)}
+              >
+                🚀 Mở Mô Phỏng 3D
+              </button>
+            </div>
+            <EngineeringToolkitPanel
+              pitchDeg={pitchDeg}
+              rollDeg={rollDeg}
+              useRealSensor={useRealSensor}
+              onToggleRealSensor={onToggleRealSensor}
+            />
+          </>
         )}
 
         {tab === 'bearing' && (
@@ -903,6 +930,18 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
             onPinTargets={handlePinTargetsFromSighting}
           />
         )}
+
+        {brickLabOpen &&
+          createPortal(
+            <BrickTower3DModal
+              pitchDeg={pitchDeg}
+              rollDeg={rollDeg}
+              useRealSensor={useRealSensor}
+              onToggleRealSensor={onToggleRealSensor}
+              onClose={() => setBrickLabOpen(false)}
+            />,
+            document.querySelector('.app-shell') || document.body
+          )}
 
         {quickArOpen &&
           createPortal(
