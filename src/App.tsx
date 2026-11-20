@@ -241,7 +241,7 @@ export const App: React.FC = () => {
   const [showPinsSheet, setShowPinsSheet] = useState<boolean>(false);
   const [showToolkitModal, setShowToolkitModal] = useState<boolean>(false);
   const [toolkitInitialTab, setToolkitInitialTab] = useState<
-    'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'
+    'decode' | 'culture' | 'engineering' | 'bearing' | 'offline' | 'ota'
   >('decode');
   const [availableOta, setAvailableOta] = useState<AvailableOtaUpdate | null>(null);
   const [apkReleaseUrl, setApkReleaseUrl] = useState<string | null>(null);

@@ -30,6 +30,7 @@ import { EngineeringToolkitPanel } from './EngineeringToolkitPanel';
 import { TacticalSightingPanel, type PinRequestPayload } from './TacticalSightingPanel';
 import { ArRangefinderOverlay } from './ArRangefinderOverlay';
 import { BrickTower3DModal } from './BrickTower3DModal';
+import { CultureHandbookPanel } from './CultureHandbookPanel';
 import {
   applyOtaBundle,
   checkGithubOtaUpdate,
@@ -467,7 +468,7 @@ export const PinsAndPoisSheet: React.FC<PinsAndPoisSheetProps> = ({
 
 interface ReconToolkitModalProps {
   dataset: NuiDinhDataset;
-  initialTab?: 'decode' | 'engineering' | 'bearing' | 'offline' | 'ota';
+  initialTab?: 'decode' | 'culture' | 'engineering' | 'bearing' | 'offline' | 'ota';
   initialAvailableOta?: AvailableOtaUpdate | null;
   initialApkUrl?: string | null;
   playerLat: number;
@@ -520,7 +521,9 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
   onFlyTo,
   onClose
 }) => {
-  const [tab, setTab] = useState<'decode' | 'engineering' | 'bearing' | 'offline' | 'ota'>(initialTab);
+  const [tab, setTab] = useState<
+    'decode' | 'culture' | 'engineering' | 'bearing' | 'offline' | 'ota'
+  >(initialTab);
   const [quickArOpen, setQuickArOpen] = useState<boolean>(false);
   const [brickLabOpen, setBrickLabOpen] = useState<boolean>(false);
   const [backupMsg, setBackupMsg] = useState<string | null>(null);
@@ -844,6 +847,14 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
           <div className="sheet-header-actions">
             <button
               type="button"
+              className="ar-launch-pill culture-launch-pill"
+              onClick={() => setTab('culture')}
+              title="Tra cứu Offline siêu tốc Sổ Tay Văn Hóa Chính Nam (BM25 + Vector Ngữ Nghĩa)"
+            >
+              📘 Sổ Tay VH
+            </button>
+            <button
+              type="button"
               className="ar-launch-pill brick-launch-pill"
               onClick={() => setBrickLabOpen(true)}
               title="Mở Phòng Thí Nghiệm Xếp Tháp Gạch & Vật Dụng 3D (Tự động tính chống gió & lung lay)"
@@ -868,6 +879,9 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
           <button type="button" className={tab === 'decode' ? 'active' : ''} onClick={() => setTab('decode')}>
             🔐 Mật Thư
           </button>
+          <button type="button" className={tab === 'culture' ? 'active' : ''} onClick={() => setTab('culture')}>
+            📘 Văn Hóa
+          </button>
           <button
             type="button"
             className={tab === 'engineering' ? 'active' : ''}
@@ -887,6 +901,8 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
         </div>
 
         {tab === 'decode' && <CipherDecoderPanel onPinCoordinate={handlePinDecodedCoord} />}
+
+        {tab === 'culture' && <CultureHandbookPanel />}
 
         {tab === 'engineering' && (
           <>
@@ -976,7 +992,7 @@ export const ReconToolkitModal: React.FC<ReconToolkitModalProps> = ({
                 <span className="offline-badge-ok">100% Trong máy</span>
               </div>
               <div className="offline-check-row">
-                <span>🔐 Giải Mật Thư + Kỹ Thuật + Giao Hội + AR + GTA V</span>
+                <span>🔐 Giải Mật Thư + 📘 Sổ Tay Văn Hóa (Vector) + 🧱 Xếp Gạch 3D</span>
                 <span className="offline-badge-ok">100% Trong máy</span>
               </div>
               <div className="offline-check-row">
